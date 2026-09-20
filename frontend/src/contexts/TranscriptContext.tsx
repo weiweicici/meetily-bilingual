@@ -8,7 +8,7 @@ import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
 import {
-  getGeminiApiKey,
+  initializeGeminiKey,
   translateWithGemini,
 } from '@/services/geminiTranslationService';
 import { TranslationSessionTracker } from '@/services/translationSessionTracker';
@@ -72,22 +72,20 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Session-isolated translation tracker for versioning and race condition prevention
   const trackerRef = useRef<TranslationSessionTracker>(new TranslationSessionTracker());
 
+  useEffect(() => {
+    void initializeGeminiKey();
+  }, []);
+
   // Non-blocking async translation request handler
   const requestTranslation = useCallback(
     (sequenceId: number, text: string, isPartial = false) => {
       const check = trackerRef.current.shouldRequest(sequenceId, text, isPartial);
       if (!check.shouldRequest) return;
 
-      const apiKey = getGeminiApiKey();
-      if (!apiKey) {
-        trackerRef.current.commitResult(check.sessionId, sequenceId, check.version, null);
-        return;
-      }
-
       // Asynchronous background translation - never blocks the English transcript pipeline
       (async () => {
         try {
-          const translation = await translateWithGemini(text.trim(), apiKey);
+          const translation = await translateWithGemini(text.trim());
           const accepted = trackerRef.current.commitResult(
             check.sessionId,
             sequenceId,

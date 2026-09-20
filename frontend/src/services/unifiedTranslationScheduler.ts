@@ -195,7 +195,7 @@ export class UnifiedTranslationScheduler {
     const { text, apiKey, signal } = item.options;
     const trimmed = text.trim();
 
-    if (!trimmed || !apiKey) {
+    if (!trimmed || (!apiKey && !this.backendTranslateFn)) {
       item.resolve(null);
       return;
     }
@@ -288,7 +288,7 @@ export class UnifiedTranslationScheduler {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
+            'x-goog-api-key': apiKey ?? '',
           },
           signal: controller.signal,
           body: JSON.stringify({
