@@ -43,12 +43,12 @@ impl TranscriptsRepository {
 
         info!("Successfully created meeting with id: {}", meeting_id);
 
-        // 2. Save each transcript segment with audio timing fields
+        // 2. Save each transcript segment with audio timing and translation fields
         for segment in transcripts {
             let transcript_id = format!("transcript-{}", Uuid::new_v4());
             let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, translation)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
@@ -57,6 +57,7 @@ impl TranscriptsRepository {
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
             .bind(segment.duration)
+            .bind(&segment.translation)
             .execute(&mut *transaction)
             .await;
 
@@ -80,6 +81,53 @@ impl TranscriptsRepository {
         transaction.commit().await?;
 
         Ok(meeting_id)
+    }
+
+    /// Update translation for a single transcript by transcript_id
+    pub async fn update_translation(
+        pool: &SqlitePool,
+        transcript_id: &str,
+        translation: &str,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query("UPDATE transcripts SET translation = ? WHERE id = ?")
+            .bind(translation)
+            .bind(transcript_id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Batch update translations by text match within a meeting (for legacy migration)
+    pub async fn batch_update_translations_by_text(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        translations: &[(String, String)],
+    ) -> Result<usize, SqlxError> {
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+        let mut updated = 0;
+
+        for (text, translation) in translations {
+            let result = sqlx::query(
+                "UPDATE transcripts SET translation = ? WHERE meeting_id = ? AND transcript = ?"
+            )
+            .bind(translation)
+            .bind(meeting_id)
+            .bind(text)
+            .execute(&mut *transaction)
+            .await;
+
+            match result {
+                Ok(r) => updated += r.rows_affected() as usize,
+                Err(e) => {
+                    let _ = transaction.rollback().await;
+                    return Err(e);
+                }
+            }
+        }
+
+        transaction.commit().await?;
+        Ok(updated)
     }
 
     /// Searches for a query string within the transcripts.

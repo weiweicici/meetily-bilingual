@@ -13,6 +13,8 @@ import { TranscriptSegmentData } from "@/types";
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
     segments: TranscriptSegmentData[];
+    /** In-memory translation map keyed by sequence_id, text, or id */
+    translationMap?: Record<string | number, string>;
     /** Whether recording is in progress */
     isRecording?: boolean;
     /** Whether recording is paused */
@@ -71,6 +73,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    translation,
 }: {
     id: string;
     timestamp: number;
@@ -78,6 +81,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    translation?: string;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
@@ -104,6 +108,11 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     ) : (
                         <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
                     )}
+                    {translation && (
+                        <p className="text-sm text-gray-500 leading-relaxed mt-1">
+                            {translation}
+                        </p>
+                    )}
                 </div>
             </div>
         </div>
@@ -112,6 +121,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
 
 export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps> = ({
     segments,
+    translationMap,
     isRecording = false,
     isPaused = false,
     isProcessing = false,
@@ -137,7 +147,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     const virtualizer = useVirtualizer({
         count: segments.length,
         getScrollElement: () => scrollRef.current,
-        estimateSize: () => 60, // Estimated height per segment
+        estimateSize: (index) => {
+            const seg = segments[index];
+            const hasTrans = Boolean(
+                seg?.translation ||
+                (seg?.sequence_id !== undefined && translationMap?.[seg.sequence_id]) ||
+                (seg?.text && translationMap?.[seg.text.trim()]) ||
+                (seg?.id && translationMap?.[seg.id])
+            );
+            return hasTrans ? 92 : 60;
+        },
         overscan: 10, // Render extra items above/below viewport
         onChange: () => {
             startTransition(() => {
@@ -296,6 +315,12 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        translation={
+                                            segment.translation
+                                            || (segment.sequence_id !== undefined ? translationMap?.[segment.sequence_id] : undefined)
+                                            || (segment.text ? translationMap?.[segment.text.trim()] : undefined)
+                                            || (segment.id ? translationMap?.[segment.id] : undefined)
+                                        }
                                     />
                                 </div>
                             );
@@ -352,6 +377,12 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        translation={
+                                            segment.translation
+                                            || (segment.sequence_id !== undefined ? translationMap?.[segment.sequence_id] : undefined)
+                                            || (segment.text ? translationMap?.[segment.text.trim()] : undefined)
+                                            || (segment.id ? translationMap?.[segment.id] : undefined)
+                                        }
                                     />
                                 </motion.div>
                             );

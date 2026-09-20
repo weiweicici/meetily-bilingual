@@ -1178,6 +1178,7 @@ mod tests {
             TranscriptSegment {
                 id: "t-1".to_string(),
                 text: "Hello world".to_string(),
+                translation: None,
                 timestamp: "2024-01-01T00:00:00Z".to_string(),
                 audio_start_time: Some(0.0),
                 audio_end_time: Some(1.5),
@@ -1186,6 +1187,7 @@ mod tests {
             TranscriptSegment {
                 id: "t-2".to_string(),
                 text: "Second segment".to_string(),
+                translation: None,
                 timestamp: "2024-01-01T00:00:01Z".to_string(),
                 audio_start_time: Some(2.0),
                 audio_end_time: Some(3.5),

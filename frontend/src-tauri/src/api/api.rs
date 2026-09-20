@@ -137,6 +137,8 @@ pub struct MeetingTranscript {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translation: Option<String>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -188,6 +190,8 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub translation: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -878,6 +882,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    translation: t.translation,
                 })
                 .collect::<Vec<_>>();
 
@@ -1381,3 +1386,175 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
         }
     }
 }
+
+/// Save or update translation for a single transcript segment
+#[tauri::command]
+pub async fn api_save_transcript_translation<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    transcript_id: String,
+    translation: String,
+) -> Result<(), String> {
+    log_info!(
+        "api_save_transcript_translation called for transcript_id: {}",
+        transcript_id
+    );
+
+    let pool = state.db_manager.pool();
+    TranscriptsRepository::update_translation(pool, &transcript_id, &translation)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to update translation for transcript {}: {}", transcript_id, e);
+            format!("Failed to update transcript translation: {}", e)
+        })?;
+
+    Ok(())
+}
+
+/// Batch update translations by text for legacy migration
+#[tauri::command]
+pub async fn api_batch_save_translations<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    translations: Vec<(String, String)>,
+) -> Result<usize, String> {
+    log_info!(
+        "api_batch_save_translations called for meeting_id: {}, count: {}",
+        meeting_id,
+        translations.len()
+    );
+
+    let pool = state.db_manager.pool();
+    TranscriptsRepository::batch_update_translations_by_text(pool, &meeting_id, &translations)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to batch update translations for meeting {}: {}", meeting_id, e);
+            format!("Failed to batch update translations: {}", e)
+        })
+}
+
+/// Save Gemini API key securely in OS Credential Vault (Windows Credential Manager, macOS Keychain, Linux Secret Service).
+/// The key is never persisted to SQLite, localStorage, or plain files.
+/// Writes the candidate key, reads back from the credential store, verifies using constant-time comparison,
+/// and rolls back to previous credential on failure.
+#[tauri::command]
+pub async fn api_save_gemini_api_key(api_key: String) -> Result<(), String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    crate::credentials::CredentialManager::set_gemini_api_key(trimmed).await
+}
+
+/// Atomically migrate Gemini API key from legacy storage to OS Credential Vault.
+/// Performs write, read-back verification with constant-time equality, and rollback on failure.
+/// Returns only success/failure without exposing the key.
+#[tauri::command]
+pub async fn api_migrate_gemini_api_key(api_key: String) -> Result<(), String> {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return Err("API key cannot be empty".to_string());
+    }
+    crate::credentials::CredentialManager::migrate_gemini_api_key(trimmed).await
+}
+
+/// Check whether the Gemini API key is configured in the OS Credential Vault.
+/// Does NOT return the secret key to frontend; only returns boolean status.
+#[tauri::command]
+pub async fn api_is_gemini_configured() -> Result<bool, String> {
+    crate::credentials::CredentialManager::is_gemini_configured().await
+}
+
+/// Delete the Gemini API key from the OS Credential Vault.
+#[tauri::command]
+pub async fn api_delete_gemini_api_key() -> Result<(), String> {
+    crate::credentials::CredentialManager::delete_gemini_api_key().await
+}
+
+/// Translate text via Google Gemini API directly from Rust backend.
+/// Restricted strictly to Google Gemini API domain and verified candidate models.
+/// Reads the API key directly from the OS secure credential store.
+/// The API key is NEVER returned to the frontend and NEVER accepted from frontend parameters.
+/// Does NOT accept arbitrary URLs and cannot act as a generic web proxy.
+#[tauri::command]
+pub async fn api_translate_gemini_text<R: Runtime>(
+    _app: AppHandle<R>,
+    _state: tauri::State<'_, AppState>,
+    text: String,
+    model: Option<String>,
+) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let api_key = match crate::credentials::CredentialManager::get_gemini_api_key().await? {
+        Some(k) if !k.is_empty() => k,
+        _ => return Err("Gemini API key is not configured in secure credential store".to_string()),
+    };
+
+    let model_name = model.as_deref().unwrap_or("gemini-2.5-flash");
+    // Minimal verified low-latency translation models (verified 2026-09-20)
+    let allowed_models = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+    ];
+    let safe_model = if allowed_models.contains(&model_name) {
+        model_name
+    } else {
+        "gemini-2.5-flash"
+    };
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        safe_model
+    );
+
+    let payload = serde_json::json!({
+        "contents": [{
+            "role": "user",
+            "parts": [{
+                "text": format!(
+                    "You are a professional translator. Translate the following English speech transcript into natural Simplified Chinese (简体中文). Only output the translated text, no explanations, no markdown formatting.\n\nEnglish: {}",
+                    trimmed
+                )
+            }]
+        }],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 1024
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("x-goog-api-key", &api_key)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status.as_u16(), err_body));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response JSON: {}", e))?;
+
+    let translated = body["candidates"][0]["content"]["parts"][0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    Ok(translated)
+}
+
+

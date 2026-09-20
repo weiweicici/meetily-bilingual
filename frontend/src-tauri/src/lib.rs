@@ -40,6 +40,7 @@ pub mod api;
 pub mod audio;
 pub mod config;
 pub mod console_utils;
+pub mod credentials;
 pub mod database;
 pub mod notifications;
 pub mod ollama;
@@ -731,6 +732,13 @@ pub fn run() {
             api::api_get_meeting_transcripts,
             api::api_save_meeting_title,
             api::api_save_transcript,
+            api::api_save_transcript_translation,
+            api::api_batch_save_translations,
+            api::api_save_gemini_api_key,
+            api::api_migrate_gemini_api_key,
+            api::api_is_gemini_configured,
+            api::api_delete_gemini_api_key,
+            api::api_translate_gemini_text,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,

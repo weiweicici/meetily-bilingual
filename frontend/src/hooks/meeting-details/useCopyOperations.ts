@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
+import { getMeetingTranslations } from '@/services/geminiTranslationService';
 
 interface UseCopyOperationsProps {
   meeting: any;
@@ -86,8 +87,17 @@ export function useCopyOperations({
 
     const header = `# Transcript of the Meeting: ${meeting.id} - ${meetingTitle ?? meeting.title}\n\n`;
     const date = `## Date: ${new Date(meeting.created_at).toLocaleDateString()}\n\n`;
+    const translations = meeting?.id ? getMeetingTranslations(meeting.id) : {};
     const fullTranscript = allTranscripts
-      .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}  `)
+      .map(t => {
+        const trans =
+          t.translation ||
+          (t.text ? translations[t.text.trim()] : undefined) ||
+          (t.sequence_id !== undefined ? translations[t.sequence_id] : undefined) ||
+          (t.id ? translations[t.id] : undefined);
+        const transLine = trans ? `\n    ${trans}` : '';
+        return `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}${transLine}  `;
+      })
       .join('\n');
 
     await navigator.clipboard.writeText(header + date + fullTranscript);

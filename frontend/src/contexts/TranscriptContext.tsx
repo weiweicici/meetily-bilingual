@@ -7,10 +7,15 @@ import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
+import {
+  getGeminiApiKey,
+  translateWithGemini,
+} from '@/services/geminiTranslationService';
+import { TranslationSessionTracker } from '@/services/translationSessionTracker';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
-  transcriptsRef: MutableRefObject<Transcript[]>
+  transcriptsRef: MutableRefObject<Transcript[]>;
   addTranscript: (update: TranscriptUpdate) => void;
   copyTranscript: () => void;
   flushBuffer: () => void;
@@ -20,6 +25,11 @@ interface TranscriptContextType {
   clearTranscripts: () => void;
   currentMeetingId: string | null;
   markMeetingAsSaved: () => Promise<void>;
+  translationMap: Record<string | number, string>;
+  translationMapRef: MutableRefObject<Record<string | number, string>>;
+  setTranslationForSequence: (sequenceId: number, translation: string, text?: string) => void;
+  requestTranslation: (sequenceId: number, text: string, isPartial?: boolean) => void;
+  waitForInFlightTranslations: (maxWaitMs?: number) => Promise<void>;
 }
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
@@ -28,6 +38,27 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
+  const [translationMap, setTranslationMap] = useState<Record<string | number, string>>({});
+  const translationMapRef = useRef<Record<string | number, string>>(translationMap);
+
+  useEffect(() => {
+    translationMapRef.current = translationMap;
+  }, [translationMap]);
+
+  const setTranslationForSequence = useCallback(
+    (sequenceId: number, translation: string, text?: string) => {
+      setTranslationMap(prev => {
+        const next = {
+          ...prev,
+          [sequenceId]: translation,
+          ...(text ? { [text.trim()]: translation } : {}),
+        };
+        translationMapRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
 
   // Recording state context - provides backend-synced state
   const recordingState = useRecordingState();
@@ -37,6 +68,67 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
+
+  // Session-isolated translation tracker for versioning and race condition prevention
+  const trackerRef = useRef<TranslationSessionTracker>(new TranslationSessionTracker());
+
+  // Non-blocking async translation request handler
+  const requestTranslation = useCallback(
+    (sequenceId: number, text: string, isPartial = false) => {
+      const check = trackerRef.current.shouldRequest(sequenceId, text, isPartial);
+      if (!check.shouldRequest) return;
+
+      const apiKey = getGeminiApiKey();
+      if (!apiKey) {
+        trackerRef.current.commitResult(check.sessionId, sequenceId, check.version, null);
+        return;
+      }
+
+      // Asynchronous background translation - never blocks the English transcript pipeline
+      (async () => {
+        try {
+          const translation = await translateWithGemini(text.trim(), apiKey);
+          const accepted = trackerRef.current.commitResult(
+            check.sessionId,
+            sequenceId,
+            check.version,
+            translation
+          );
+
+          if (accepted && translation) {
+            setTranslationForSequence(sequenceId, translation, text.trim());
+          }
+        } catch (error) {
+          trackerRef.current.commitResult(check.sessionId, sequenceId, check.version, null);
+          console.error(
+            `[Translation] Translation failed for sequence ${sequenceId}:`,
+            error instanceof Error ? error.message : 'Unknown error'
+          );
+        }
+      })();
+    },
+    [setTranslationForSequence]
+  );
+
+  const waitForInFlightTranslations = useCallback(async (maxWaitMs = 10000) => {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      if (!trackerRef.current.hasInFlight()) {
+        break;
+      }
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }, []);
+
+  // Self-healing: ensure any visible transcript segment has translation triggered (only confirmed non-partial segments)
+  useEffect(() => {
+    if (transcripts.length === 0) return;
+    for (const t of transcripts) {
+      if (!t.is_partial && t.sequence_id !== undefined && t.text?.trim() && !translationMap[t.sequence_id]) {
+        requestTranslation(t.sequence_id, t.text, false);
+      }
+    }
+  }, [transcripts, translationMap, requestTranslation]);
 
   // Keep ref updated with current transcripts
   useEffect(() => {
@@ -296,6 +388,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             buffer_size_before: transcriptBuffer.size
           });
 
+          // Trigger async Chinese translation for confirmed final transcribed segments
+          if (!update.is_partial && update.sequence_id !== undefined && update.text?.trim()) {
+            requestTranslation(update.sequence_id, update.text, false);
+          }
+
           // Check for duplicate sequence_id before processing
           if (transcriptBuffer.has(update.sequence_id)) {
             console.log('🚫 MAIN LISTENER: Duplicate sequence_id, skipping buffer:', update.sequence_id);
@@ -413,6 +510,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       is_partial: update.is_partial
     });
 
+    // Trigger async Chinese translation for confirmed final transcribed segments
+    if (!update.is_partial && update.sequence_id !== undefined && update.text?.trim()) {
+      requestTranslation(update.sequence_id, update.text, false);
+    }
+
     const newTranscript: Transcript = {
       id: update.sequence_id ? update.sequence_id.toString() : Date.now().toString(),
       text: update.text,
@@ -453,7 +555,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  // Copy transcript to clipboard with recording-relative timestamps
+  // Copy transcript to clipboard with recording-relative timestamps and translations
   const copyTranscript = useCallback(() => {
     // Format timestamps as recording-relative [MM:SS] instead of wall-clock time
     const formatTime = (seconds: number | undefined): string => {
@@ -465,12 +567,19 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     };
 
     const fullTranscript = transcripts
-      .map(t => `${formatTime(t.audio_start_time)} ${t.text}`)
+      .map(t => {
+        const trans =
+          (t.sequence_id !== undefined ? translationMap[t.sequence_id] : undefined) ||
+          (t.text ? translationMap[t.text.trim()] : undefined) ||
+          (t.id ? translationMap[t.id] : undefined);
+        const transLine = trans ? `\n    ${trans}` : '';
+        return `${formatTime(t.audio_start_time)} ${t.text}${transLine}  `;
+      })
       .join('\n');
     navigator.clipboard.writeText(fullTranscript);
 
     toast.success("Transcript copied to clipboard");
-  }, [transcripts]);
+  }, [transcripts, translationMap]);
 
   // Force flush buffer (for final transcript processing)
   const flushBuffer = useCallback(() => {
@@ -483,6 +592,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
     setTranscripts([]);
+    setTranslationMap({});
+    trackerRef.current.resetSession();
     // Don't clear currentMeetingId here - it will be set by recording-started event
   }, []);
 
@@ -521,6 +632,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     clearTranscripts,
     currentMeetingId,
     markMeetingAsSaved,
+    translationMap,
+    translationMapRef,
+    setTranslationForSequence,
+    requestTranslation,
+    waitForInFlightTranslations,
   };
 
   return (

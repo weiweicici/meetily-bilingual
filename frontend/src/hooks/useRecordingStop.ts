@@ -12,6 +12,7 @@ import {
   applyPinnedSummaryLanguageToMeeting,
   detectAndCacheSummaryLanguage,
 } from '@/lib/summary-language-preferences';
+import { saveMeetingTranslations } from '@/services/geminiTranslationService';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -57,6 +58,10 @@ export function useRecordingStop(
     clearTranscripts,
     meetingTitle,
     markMeetingAsSaved,
+    translationMap,
+    translationMapRef,
+    requestTranslation,
+    waitForInFlightTranslations,
   } = useTranscripts();
 
   const {
@@ -230,6 +235,31 @@ export function useRecordingStop(
       console.log('Waiting for transcript state updates to complete...');
       await new Promise(resolve => setTimeout(resolve, 500));
 
+      // Trigger translation for any freshly flushed transcript segments
+      for (const t of transcriptsRef.current) {
+        if (t.sequence_id !== undefined && t.text?.trim()) {
+          const trans =
+            translationMapRef.current[t.sequence_id] ||
+            translationMapRef.current[t.text.trim()];
+          if (!trans) {
+            requestTranslation(t.sequence_id, t.text);
+          }
+        }
+      }
+
+      // Wait for all in-flight translations to finish before database save
+      try {
+        const { getGeminiApiKey } = await import('@/services/geminiTranslationService');
+        if (getGeminiApiKey()) {
+          setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, '正在完成中文字幕翻译...');
+          console.log('⏳ Waiting for in-flight translations to finish before saving...');
+          await waitForInFlightTranslations(8000);
+          console.log('✅ In-flight translations finished');
+        }
+      } catch (waitErr) {
+        console.warn('Wait for translations error:', waitErr);
+      }
+
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save
@@ -237,8 +267,18 @@ export function useRecordingStop(
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
-        // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
+        // Get fresh transcript state and attach translations for direct SQLite persistence
+        const liveTranslations = translationMapRef.current;
+        const freshTranscripts = transcriptsRef.current.map(t => {
+          const trans =
+            (t.sequence_id !== undefined ? liveTranslations[t.sequence_id] : undefined) ||
+            (t.text ? liveTranslations[t.text.trim()] : undefined) ||
+            (t.id ? liveTranslations[t.id] : undefined);
+          return {
+            ...t,
+            translation: trans || t.translation,
+          };
+        });
 
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
@@ -263,6 +303,39 @@ export function useRecordingStop(
           if (!meetingId) {
             console.error('No meeting_id in response:', responseData);
             throw new Error('No meeting ID received from save operation');
+          }
+
+          // Persist all live translations for this meeting in localStorage
+          try {
+            sessionStorage.setItem('last_saved_meeting_id', meetingId);
+            const liveTranslations = translationMapRef.current;
+            const meetingTranslations: Record<string, string> = {};
+            for (const t of freshTranscripts) {
+              const trans =
+                (t.sequence_id !== undefined ? liveTranslations[t.sequence_id] : undefined) ||
+                (t.text ? liveTranslations[t.text.trim()] : undefined) ||
+                (t.id ? liveTranslations[t.id] : undefined);
+              if (trans) {
+                if (t.sequence_id !== undefined) {
+                  meetingTranslations[t.sequence_id] = trans;
+                }
+                if (t.text?.trim()) {
+                  meetingTranslations[t.text.trim()] = trans;
+                }
+                if (t.id) {
+                  meetingTranslations[t.id] = trans;
+                }
+              }
+            }
+            for (const [key, val] of Object.entries(liveTranslations)) {
+              if (val) {
+                meetingTranslations[key] = val;
+              }
+            }
+            saveMeetingTranslations(meetingId, meetingTranslations);
+            console.log(`💾 Persisted ${Object.keys(meetingTranslations).length} translation keys for meeting:`, meetingId);
+          } catch (transSaveError) {
+            console.warn('Failed to persist meeting translations:', transSaveError);
           }
 
           let shouldDetectSummaryLanguage = false;
@@ -337,8 +410,13 @@ export function useRecordingStop(
 
           // Auto-navigate after a short delay with source parameter
           setTimeout(() => {
+            // Final sync of translations before memory wipe
+            try {
+              saveMeetingTranslations(meetingId, translationMapRef.current);
+            } catch (e) {}
+
             router.push(`/meeting-details?id=${meetingId}&source=recording`);
-            clearTranscripts()
+            clearTranscripts();
             Analytics.trackPageView('meeting_details');
 
             // Reset to IDLE after navigation

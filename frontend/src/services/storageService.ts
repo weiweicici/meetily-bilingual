@@ -64,6 +64,20 @@ export class StorageService {
   async getMeetings(): Promise<Meeting[]> {
     return invoke<Meeting[]>('api_get_meetings');
   }
+
+  /**
+   * Save translation for a single transcript segment directly to SQLite
+   */
+  async saveTranscriptTranslation(transcriptId: string, translation: string): Promise<void> {
+    return invoke('api_save_transcript_translation', { transcriptId, translation });
+  }
+
+  /**
+   * Batch save translations for a meeting directly to SQLite (used for legacy data migration)
+   */
+  async batchSaveTranslations(meetingId: string, translations: [string, string][]): Promise<number> {
+    return invoke<number>('api_batch_save_translations', { meetingId, translations });
+  }
 }
 
 // Export singleton instance
