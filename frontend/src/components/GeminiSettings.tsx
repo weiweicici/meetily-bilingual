@@ -16,10 +16,16 @@ import {
   migrateLegacyGeminiKey,
   isCloudTranslationEnabled,
   setCloudTranslationEnabled,
+  getUserTranslationMode,
+  setUserTranslationMode,
+  UserTranslationMode,
 } from '@/services/geminiTranslationService';
 import { translationStatsTracker, SessionTranslationStats } from '@/services/translationStatsTracker';
 
 export function GeminiSettings() {
+  // Translation Provider Mode State
+  const [providerMode, setProviderMode] = useState<UserTranslationMode>('cloud');
+
   // Groq State (Primary)
   const [groqKey, setGroqKey] = useState<string>('');
   const [showGroqKey, setShowGroqKey] = useState<boolean>(false);
@@ -84,11 +90,26 @@ export function GeminiSettings() {
       setGroqKey('');
       setGeminiKey('');
       setIsCloudEnabled(isCloudTranslationEnabled());
+      setProviderMode(getUserTranslationMode());
     }
 
     loadStatus();
     return () => unsubStats();
   }, []);
+
+  const handleProviderChange = async (mode: UserTranslationMode) => {
+    const result = await setUserTranslationMode(mode);
+    if (result.success) {
+      setProviderMode(mode);
+      if (mode === 'cloud') {
+        toast.success('已切换至 Cloud 翻译模式');
+      } else {
+        toast.success('已切换至 Local Qwen 本地 AI 翻译模式');
+      }
+    } else {
+      toast.error(result.error || 'Local Qwen model is not available.');
+    }
+  };
 
   const handleOpenLogFolder = async () => {
     try {
@@ -247,8 +268,69 @@ export function GeminiSettings() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-zinc-400 mb-5 leading-relaxed">
-        为语音转录提供极速实时中英双语字幕。默认优先采用 <strong>Groq (超低延迟)</strong> 进行即时翻译，若遇故障自动无缝降级至 <strong>Gemini (高精度备用)</strong>。所有密钥均由 Windows 凭据管理器原生保管。
+        为语音转录提供极速实时中英双语字幕。支持在在线 Cloud 通道与 Local Qwen 本地模型之间安全平滑热切换。
       </p>
+
+      {/* Translation Provider Selector */}
+      <div className="mb-6 p-4 rounded-lg bg-gray-50 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-800">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-sm font-medium text-gray-900 dark:text-zinc-100 flex items-center gap-2">
+            <Zap className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            Translation Provider
+          </div>
+          <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300">
+            {providerMode === 'local_qwen' ? 'Local Qwen selected' : 'Cloud selected'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label
+            onClick={() => handleProviderChange('cloud')}
+            className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-all ${
+              providerMode === 'cloud'
+                ? 'bg-blue-50/80 dark:bg-blue-950/40 border-blue-500 text-blue-900 dark:text-blue-100'
+                : 'bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:border-gray-300 dark:hover:border-zinc-600'
+            }`}
+          >
+            <input
+              type="radio"
+              name="translation_provider"
+              checked={providerMode === 'cloud'}
+              onChange={() => handleProviderChange('cloud')}
+              className="mt-0.5 text-blue-600"
+            />
+            <div>
+              <div className="font-semibold text-sm">Cloud</div>
+              <div className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+                Fast translation using online AI. Requires internet.
+              </div>
+            </div>
+          </label>
+
+          <label
+            onClick={() => handleProviderChange('local_qwen')}
+            className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-all ${
+              providerMode === 'local_qwen'
+                ? 'bg-blue-50/80 dark:bg-blue-950/40 border-blue-500 text-blue-900 dark:text-blue-100'
+                : 'bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:border-gray-300 dark:hover:border-zinc-600'
+            }`}
+          >
+            <input
+              type="radio"
+              name="translation_provider"
+              checked={providerMode === 'local_qwen'}
+              onChange={() => handleProviderChange('local_qwen')}
+              className="mt-0.5 text-blue-600"
+            />
+            <div>
+              <div className="font-semibold text-sm">Local Qwen</div>
+              <div className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+                Runs on this computer. Transcript is not sent to cloud translation services.
+              </div>
+            </div>
+          </label>
+        </div>
+      </div>
 
       {/* Global Translation Authorization Toggle */}
       <div className="mb-6 p-4 rounded-lg bg-gray-50 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-800">

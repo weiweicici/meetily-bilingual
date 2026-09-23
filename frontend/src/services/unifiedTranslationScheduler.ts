@@ -33,15 +33,26 @@ export const GEMINI_CANDIDATE_MODELS = [
 // For backward compatibility with existing tests
 export const OFFICIAL_CANDIDATE_MODELS = GEMINI_CANDIDATE_MODELS;
 
+export type TranslationProvider = 'cloud' | 'groq' | 'gemini' | 'local_qwen';
+
 export interface SchedulerOptions {
   maxConcurrency?: number;
   minIntervalMs?: number; // Minimum spacing between requests
   maxQueueSize?: number;
   requestTimeoutMs?: number;
+  provider?: TranslationProvider;
   fetchFn?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   backendTranslateGroqFn?: (text: string, model: string, signal?: AbortSignal) => Promise<string>;
   backendTranslateGeminiFn?: (text: string, model: string, signal?: AbortSignal) => Promise<string>;
   backendTranslateFn?: (text: string, model: string, signal?: AbortSignal) => Promise<string>;
+  backendTranslateLocalFn?: (
+    segments: Array<{ id: number; text: string }>,
+    signal?: AbortSignal
+  ) => Promise<{
+    successful_segments: Array<{ id: number; translation: string }>;
+    failed_ids: number[];
+    raw_response?: string;
+  }>;
 }
 
 export interface EnqueueTaskOptions {
@@ -50,6 +61,7 @@ export interface EnqueueTaskOptions {
   apiKey?: string;
   signal?: AbortSignal;
   sequenceId?: number;
+  provider?: TranslationProvider;
 }
 
 interface QueuedItem {
@@ -90,14 +102,25 @@ export class UnifiedTranslationScheduler {
   private minIntervalMs: number;
   private maxQueueSize: number;
   private requestTimeoutMs: number;
+  private provider: TranslationProvider = 'groq';
   private fetchFn?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   private backendTranslateGroqFn?: (text: string, model: string, signal?: AbortSignal) => Promise<string>;
   private backendTranslateGeminiFn?: (text: string, model: string, signal?: AbortSignal) => Promise<string>;
+  private backendTranslateLocalFn?: (
+    segments: Array<{ id: number; text: string }>,
+    signal?: AbortSignal
+  ) => Promise<{
+    successful_segments: Array<{ id: number; translation: string }>;
+    failed_ids: number[];
+    raw_response?: string;
+  }>;
 
   private queue: QueuedItem[] = [];
   private pendingBatchItems: PendingBatchItem[] = [];
+  private localPendingItems: PendingBatchItem[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
-  private activeCount = 0;
+  private activeCloudCount = 0;
+  private activeLocalCount = 0;
   private cooldownUntil = 0;
   private lastRequestTime = 0;
   private disabledGeminiModels = new Set<string>();
@@ -114,9 +137,36 @@ export class UnifiedTranslationScheduler {
     this.minIntervalMs = options.minIntervalMs ?? 500; // 500ms spacing
     this.maxQueueSize = options.maxQueueSize ?? 100;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
+    this.provider = options.provider ?? 'groq';
     this.fetchFn = options.fetchFn ?? (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : undefined);
     this.backendTranslateGroqFn = options.backendTranslateGroqFn;
     this.backendTranslateGeminiFn = options.backendTranslateGeminiFn ?? options.backendTranslateFn;
+    this.backendTranslateLocalFn = options.backendTranslateLocalFn;
+  }
+
+  public setProvider(provider: TranslationProvider): void {
+    if (provider === 'cloud') {
+      this.provider = 'groq';
+    } else {
+      this.provider = provider;
+    }
+  }
+
+  public getProvider(): TranslationProvider {
+    return this.provider;
+  }
+
+  public setBackendTranslateLocalFn(
+    fn?: (
+      segments: Array<{ id: number; text: string }>,
+      signal?: AbortSignal
+    ) => Promise<{
+      successful_segments: Array<{ id: number; translation: string }>;
+      failed_ids: number[];
+      raw_response?: string;
+    }>
+  ): void {
+    this.backendTranslateLocalFn = fn;
   }
 
   public setBackendTranslateGroqFn(fn?: (text: string, model: string, signal?: AbortSignal) => Promise<string>): void {
@@ -137,11 +187,19 @@ export class UnifiedTranslationScheduler {
   }
 
   public getActiveCount(): number {
-    return this.activeCount;
+    return this.activeCloudCount + this.activeLocalCount;
+  }
+
+  public getActiveCloudCount(): number {
+    return this.activeCloudCount;
+  }
+
+  public getActiveLocalCount(): number {
+    return this.activeLocalCount;
   }
 
   public getPendingBatchLength(): number {
-    return this.pendingBatchItems.length;
+    return this.provider === 'local_qwen' ? this.localPendingItems.length : this.pendingBatchItems.length;
   }
 
   public isCoolingDown(): boolean {
@@ -164,6 +222,10 @@ export class UnifiedTranslationScheduler {
 
   public clear(): void {
     this.flushPendingBatch('session_stop');
+    const cancelledLocal = this.localPendingItems.splice(0, this.localPendingItems.length);
+    for (const item of cancelledLocal) {
+      item.resolve(null);
+    }
     const cancelledItems = this.queue.splice(0, this.queue.length);
     for (const item of cancelledItems) {
       item.resolve(null);
@@ -179,6 +241,16 @@ export class UnifiedTranslationScheduler {
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
+    }
+
+    if (this.localPendingItems.length > 0) {
+      const itemsToFlush = [...this.localPendingItems];
+      this.localPendingItems = [];
+      while (itemsToFlush.length > 0) {
+        const chunk = itemsToFlush.splice(0, 3);
+        translationDiagnosticLogger.stageLocalPendingFlush(chunk.length);
+        this.dispatchLocalBatch(chunk);
+      }
     }
 
     if (this.pendingBatchItems.length === 0) {
@@ -216,6 +288,71 @@ export class UnifiedTranslationScheduler {
       text: item.options.text,
     }));
 
+    const batchProvider = itemsToFlush[0].options.provider || 'groq';
+
+    if (batchProvider === 'local_qwen') {
+      const firstItem = itemsToFlush[0];
+      const combinedSignal = firstItem.options.signal;
+      const batchSeq = firstItem.options.sequenceId;
+
+      this.enqueueInternal({
+        options: {
+          id: `batch-local-${Date.now()}-${itemsToFlush.length}`,
+          text: JSON.stringify(payloadItems),
+          signal: combinedSignal,
+          sequenceId: batchSeq,
+          provider: 'local_qwen',
+        },
+        resolve: (jsonResultString: string | null) => {
+          let mapped = new Map<number, string>();
+          if (jsonResultString) {
+            try {
+              const parsed = JSON.parse(jsonResultString);
+              if (Array.isArray(parsed)) {
+                for (const s of parsed) {
+                  if (s && s.id !== undefined && typeof s.translation === 'string' && s.translation.trim()) {
+                    mapped.set(Number(s.id), this.cleanTranslationText(s.translation));
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn('[Scheduler] Local batch JSON parse failed:', e);
+            }
+          }
+
+          if (mapped.size > 1) {
+            translationStatsTracker.recordBatchedSegments(mapped.size);
+            translationDiagnosticLogger.stageBatchSuccess(itemsToFlush.length, mapped.size);
+          }
+
+          if (mapped.size < itemsToFlush.length) {
+            const fallbackCount = itemsToFlush.length - mapped.size;
+            translationDiagnosticLogger.stageBatchPartialMapping(itemsToFlush.length, mapped.size, fallbackCount);
+          }
+
+          for (const item of itemsToFlush) {
+            const key = item.options.sequenceId ?? payloadItems.find(p => p.text === item.options.text)?.id;
+            const translated = key !== undefined ? mapped.get(key) : undefined;
+
+            if (translated) {
+              item.resolve(translated);
+            } else {
+              // Phase 4D Strict Local Privacy Policy: resolve null on unmapped/failed item (NO GROQ/GEMINI FALLBACK)
+              item.resolve(null);
+            }
+          }
+        },
+        reject: () => {
+          translationDiagnosticLogger.stageBatchPartialMapping(itemsToFlush.length, 0, itemsToFlush.length);
+          for (const item of itemsToFlush) {
+            item.resolve(null);
+          }
+        },
+        attempts: 0,
+      });
+      return;
+    }
+
     // Explicit batch prompt format instructing model to output valid JSON array with sequence IDs
     const batchPromptHeader = `Translate the following English transcript segments into Simplified Chinese.
 Return ONLY a valid JSON array of objects without markdown formatting or code blocks.
@@ -240,6 +377,7 @@ Input Segments:
         apiKey: combinedApiKey,
         signal: combinedSignal,
         sequenceId: batchSeq,
+        provider: batchProvider,
       },
       resolve: (rawResponse: string | null) => {
         if (!rawResponse) {
@@ -360,6 +498,176 @@ Input Segments:
     return result;
   }
 
+  private enqueueLocal(options: EnqueueTaskOptions): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      const isIdle = this.activeLocalCount === 0 && this.localPendingItems.length === 0;
+
+      if (isIdle) {
+        translationDiagnosticLogger.stageLocalImmediateStart(options.sequenceId);
+        this.dispatchLocalBatch([{ options, resolve, reject, addedAt: Date.now() }]);
+      } else {
+        this.localPendingItems.push({
+          options,
+          resolve,
+          reject,
+          addedAt: Date.now(),
+        });
+        translationDiagnosticLogger.stageLocalPendingAdd(options.sequenceId, this.localPendingItems.length);
+      }
+    });
+  }
+
+  private dispatchLocalBatch(items: PendingBatchItem[]): void {
+    if (items.length === 0) return;
+
+    this.activeLocalCount = 1;
+
+    const payloadItems = items.map((item, idx) => ({
+      id: item.options.sequenceId ?? (idx + 1),
+      text: item.options.text,
+    }));
+    const sequenceIds = payloadItems.map(p => p.id);
+
+    translationDiagnosticLogger.stageLocalBatchStart(items.length, sequenceIds);
+
+    const firstItem = items[0];
+    const combinedSignal = firstItem.options.signal;
+    const batchSeq = firstItem.options.sequenceId;
+    const localBatchId = `batch-local-${Date.now()}-${items.length}-${Math.random().toString(36).substr(2, 4)}`;
+
+    const localStart = Date.now();
+
+    this.executeLocalTask({
+      options: {
+        id: localBatchId,
+        text: JSON.stringify(payloadItems),
+        signal: combinedSignal,
+        sequenceId: batchSeq,
+        provider: 'local_qwen',
+      },
+      resolve: (jsonResultString: string | null) => {
+        this.activeLocalCount = 0;
+        const latencyMs = Date.now() - localStart;
+        translationDiagnosticLogger.stageLocalBatchComplete(items.length, latencyMs);
+
+        let mapped = new Map<number, string>();
+        if (jsonResultString) {
+          try {
+            const parsed = JSON.parse(jsonResultString);
+            if (Array.isArray(parsed)) {
+              for (const s of parsed) {
+                if (s && s.id !== undefined && typeof s.translation === 'string' && s.translation.trim()) {
+                  mapped.set(Number(s.id), this.cleanTranslationText(s.translation));
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[Scheduler] Local batch JSON parse failed:', e);
+          }
+        }
+
+        if (mapped.size > 1) {
+          translationStatsTracker.recordBatchedSegments(mapped.size);
+          translationDiagnosticLogger.stageBatchSuccess(items.length, mapped.size);
+        }
+
+        if (mapped.size < items.length) {
+          const fallbackCount = items.length - mapped.size;
+          translationDiagnosticLogger.stageBatchPartialMapping(items.length, mapped.size, fallbackCount);
+        }
+
+        for (const item of items) {
+          const key = item.options.sequenceId ?? payloadItems.find(p => p.text === item.options.text)?.id;
+          const translated = key !== undefined ? mapped.get(key) : undefined;
+
+          if (translated) {
+            item.resolve(translated);
+          } else {
+            item.resolve(null);
+          }
+        }
+
+        this.checkAndFlushNextLocalPending();
+      },
+      reject: () => {
+        this.activeLocalCount = 0;
+        const latencyMs = Date.now() - localStart;
+        translationDiagnosticLogger.stageLocalBatchComplete(items.length, latencyMs);
+        translationDiagnosticLogger.stageBatchPartialMapping(items.length, 0, items.length);
+        for (const item of items) {
+          item.resolve(null);
+        }
+        this.checkAndFlushNextLocalPending();
+      },
+      attempts: 0,
+    });
+  }
+
+  private async executeLocalTask(item: QueuedItem): Promise<void> {
+    const { text, signal } = item.options;
+    const trimmed = text.trim();
+    const seq = item.options.sequenceId;
+
+    if (!trimmed) {
+      item.resolve(null);
+      return;
+    }
+
+    if (signal?.aborted) {
+      item.resolve(null);
+      return;
+    }
+
+    let payloadItems: Array<{ id: number; text: string }> = [];
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed) && parsed.every(p => typeof p === 'object' && p !== null && 'text' in p)) {
+        payloadItems = parsed.map((p: any, idx: number) => ({
+          id: p.id ?? (seq ?? (idx + 1)),
+          text: String(p.text),
+        }));
+      }
+    } catch (_) {
+      // Not a JSON array, single segment
+    }
+
+    if (payloadItems.length === 0) {
+      payloadItems = [{ id: seq ?? 1, text: trimmed }];
+    }
+
+    try {
+      translationDiagnosticLogger.stageProviderSelect('local_qwen', 'qwen3.5:4b', seq);
+      let result: { successful_segments: Array<{ id: number; translation: string }>; failed_ids: number[] } | null = null;
+
+      if (this.backendTranslateLocalFn) {
+        result = await this.backendTranslateLocalFn(payloadItems, signal);
+      } else {
+        const { apiTranslateLocalBatch } = await import('./localTranslationService.ts');
+        result = await apiTranslateLocalBatch(payloadItems);
+      }
+
+      if (result && result.successful_segments) {
+        if (item.options.id.startsWith('batch-local-')) {
+          item.resolve(JSON.stringify(result.successful_segments));
+          return;
+        } else {
+          const match = result.successful_segments.find(s => s.id === (seq ?? 1)) || result.successful_segments[0];
+          if (match && match.translation && match.translation.trim()) {
+            const cleaned = this.cleanTranslationText(match.translation);
+            item.resolve(cleaned);
+            return;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[Scheduler] Local Qwen execution error:', err);
+    }
+
+    // Phase 4D / 5B Strict Local Privacy Policy: resolve null on failure (NO GROQ/GEMINI FALLBACK)
+    item.resolve(null);
+  }
+
   /**
    * Enqueue a translation request. Performs micro-batching for short segments.
    */
@@ -368,10 +676,19 @@ Input Segments:
       return Promise.resolve(null);
     }
 
-    const wordCount = countEnglishWords(options.text);
-    const isShort = wordCount < SHORT_SEGMENT_THRESHOLD;
+    const itemProvider = options.provider || this.provider;
+    options.provider = itemProvider;
 
+    translationDiagnosticLogger.stageProviderOwnershipAssigned(options.sequenceId, itemProvider);
+
+    const wordCount = countEnglishWords(options.text);
     translationDiagnosticLogger.stageBatchSegmentReceived(options.sequenceId, wordCount);
+
+    if (itemProvider === 'local_qwen') {
+      return this.enqueueLocal(options);
+    }
+
+    const isShort = wordCount < SHORT_SEGMENT_THRESHOLD;
 
     return new Promise((resolve, reject) => {
       if (isShort) {
@@ -436,12 +753,20 @@ Input Segments:
     translationDiagnosticLogger.stageEnqueue(
       item.options.sequenceId,
       this.queue.length,
-      this.activeCount,
+      this.activeCloudCount,
       item.options.text.length
     );
     translationStatsTracker.updateQueueDepth(this.queue.length);
 
     this.scheduleNext();
+  }
+
+  private checkAndFlushNextLocalPending(): void {
+    if (this.localPendingItems.length > 0 && this.activeLocalCount === 0) {
+      const nextChunk = this.localPendingItems.splice(0, 3);
+      translationDiagnosticLogger.stageLocalPendingFlush(nextChunk.length);
+      this.dispatchLocalBatch(nextChunk);
+    }
   }
 
   private scheduleNext(): void {
@@ -450,7 +775,7 @@ Input Segments:
 
     setTimeout(async () => {
       try {
-        while (this.queue.length > 0 && this.activeCount < this.maxConcurrency) {
+        while (this.queue.length > 0 && this.activeCloudCount < this.maxConcurrency) {
           const now = Date.now();
 
           // Check cooldown from 429
@@ -476,19 +801,19 @@ Input Segments:
             continue;
           }
 
-          this.activeCount++;
+          this.activeCloudCount++;
           this.lastRequestTime = Date.now();
 
           translationDiagnosticLogger.stageDequeue(
             item.options.sequenceId,
             this.queue.length,
-            this.activeCount
+            this.activeCloudCount
           );
           translationStatsTracker.updateQueueDepth(this.queue.length);
 
           // Execute task in background
           this.executeTask(item).finally(() => {
-            this.activeCount--;
+            this.activeCloudCount--;
             this.scheduleNext();
           });
         }
@@ -508,6 +833,11 @@ Input Segments:
   }
 
   private async executeTask(item: QueuedItem): Promise<void> {
+    const itemProvider = item.options.provider || this.provider;
+    if (itemProvider === 'local_qwen') {
+      return this.executeLocalTask(item);
+    }
+
     const { text, apiKey, signal } = item.options;
     const trimmed = text.trim();
 

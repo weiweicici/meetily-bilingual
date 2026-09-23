@@ -137,6 +137,26 @@ pub async fn generate_with_builtin(
     user_prompt: &str,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String> {
+    generate_with_builtin_custom(
+        app_data_dir,
+        model_name,
+        system_prompt,
+        user_prompt,
+        None,
+        cancellation_token,
+    )
+    .await
+}
+
+/// Generate text using built-in AI with custom max_tokens override
+pub async fn generate_with_builtin_custom(
+    app_data_dir: &PathBuf,
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    custom_max_tokens: Option<i32>,
+    cancellation_token: Option<&CancellationToken>,
+) -> Result<String> {
     // Check cancellation at start
     if let Some(token) = cancellation_token {
         if token.is_cancelled() {
@@ -180,9 +200,10 @@ pub async fn generate_with_builtin(
 
     // Prepare generation request with model-specific sampling parameters
     let sampling = model_def.sampling.sanitize_for_llama_helper();
+    let max_tokens = custom_max_tokens.unwrap_or(models::DEFAULT_MAX_TOKENS);
     let request = Request::Generate {
         prompt: formatted_prompt,
-        max_tokens: Some(models::DEFAULT_MAX_TOKENS),
+        max_tokens: Some(max_tokens),
         context_size: Some(model_def.context_size),
         model_path: Some(model_path.to_string_lossy().to_string()),
         temperature: Some(sampling.temperature),

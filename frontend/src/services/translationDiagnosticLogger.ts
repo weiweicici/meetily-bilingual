@@ -49,9 +49,18 @@ export interface TranslationLogEvent {
     | 'batch_flush'
     | 'batch_request'
     | 'batch_success'
-    | 'batch_partial_mapping';
+    | 'batch_partial_mapping'
+    | 'local_immediate_start'
+    | 'local_pending_add'
+    | 'local_pending_flush'
+    | 'local_batch_start'
+    | 'local_batch_complete'
+    | 'provider_switch_request'
+    | 'provider_switch_success'
+    | 'provider_switch_rejected'
+    | 'provider_ownership_assigned';
   sequenceId?: number;
-  provider?: 'groq' | 'gemini';
+  provider?: 'cloud' | 'groq' | 'gemini' | 'local_qwen';
   model?: string;
   textLen?: number;
   outputLen?: number;
@@ -291,7 +300,7 @@ class TranslationDiagnosticLogger {
     });
   }
 
-  public stageProviderSelect(provider: 'groq' | 'gemini', model: string, sequenceId?: number): void {
+  public stageProviderSelect(provider: 'groq' | 'gemini' | 'local_qwen', model: string, sequenceId?: number): void {
     this.log({
       level: 'INFO',
       stage: 'provider_select',
@@ -301,7 +310,7 @@ class TranslationDiagnosticLogger {
     });
   }
 
-  public stageCredential(provider: 'groq' | 'gemini', available: boolean, sequenceId?: number): void {
+  public stageCredential(provider: 'groq' | 'gemini' | 'local_qwen', available: boolean, sequenceId?: number): void {
     this.log({
       level: available ? 'DEBUG' : 'WARN',
       stage: 'credential',
@@ -311,7 +320,7 @@ class TranslationDiagnosticLogger {
     });
   }
 
-  public stageRequest(provider: 'groq' | 'gemini', model: string, sequenceId?: number, retry = 0, textLen?: number): void {
+  public stageRequest(provider: 'groq' | 'gemini' | 'local_qwen', model: string, sequenceId?: number, retry = 0, textLen?: number): void {
     this.log({
       level: 'INFO',
       stage: 'request',
@@ -323,7 +332,7 @@ class TranslationDiagnosticLogger {
     });
   }
 
-  public stageSuccess(provider: 'groq' | 'gemini', model: string, sequenceId: number | undefined, latencyMs: number, outputLen: number): void {
+  public stageSuccess(provider: 'groq' | 'gemini' | 'local_qwen', model: string, sequenceId: number | undefined, latencyMs: number, outputLen: number): void {
     this.log({
       level: 'INFO',
       stage: 'success',
@@ -335,7 +344,7 @@ class TranslationDiagnosticLogger {
     });
   }
 
-  public stageHttpError(provider: 'groq' | 'gemini', model: string, sequenceId: number | undefined, status: number, category: TranslationFailureCategory): void {
+  public stageHttpError(provider: 'groq' | 'gemini' | 'local_qwen', model: string, sequenceId: number | undefined, status: number, category: TranslationFailureCategory): void {
     this.log({
       level: 'WARN',
       stage: 'http_error',
@@ -454,6 +463,93 @@ class TranslationDiagnosticLogger {
         mapped_count: mappedCount,
         fallback_count: fallbackCount,
       },
+    });
+  }
+
+  public stageLocalImmediateStart(sequenceId?: number): void {
+    this.log({
+      level: 'INFO',
+      stage: 'local_immediate_start',
+      sequenceId,
+      provider: 'local_qwen',
+    });
+  }
+
+  public stageLocalPendingAdd(sequenceId?: number, pendingCount?: number): void {
+    this.log({
+      level: 'DEBUG',
+      stage: 'local_pending_add',
+      sequenceId,
+      provider: 'local_qwen',
+      details: { pending_count: pendingCount },
+    });
+  }
+
+  public stageLocalPendingFlush(batchSegmentCount?: number): void {
+    this.log({
+      level: 'INFO',
+      stage: 'local_pending_flush',
+      provider: 'local_qwen',
+      details: { batch_segment_count: batchSegmentCount },
+    });
+  }
+
+  public stageLocalBatchStart(segmentCount?: number, sequenceIds?: number[]): void {
+    this.log({
+      level: 'INFO',
+      stage: 'local_batch_start',
+      provider: 'local_qwen',
+      details: {
+        segment_count: segmentCount,
+        ...(sequenceIds ? { sequence_ids: sequenceIds.join(',') } : {}),
+      },
+    });
+  }
+
+  public stageLocalBatchComplete(segmentCount?: number, latencyMs?: number): void {
+    this.log({
+      level: 'INFO',
+      stage: 'local_batch_complete',
+      provider: 'local_qwen',
+      latencyMs,
+      details: { segment_count: segmentCount },
+    });
+  }
+
+  public stageProviderSwitchRequest(fromProvider: string, toProvider: string): void {
+    this.log({
+      level: 'INFO',
+      stage: 'provider_switch_request',
+      fromProvider,
+      toProvider,
+    });
+  }
+
+  public stageProviderSwitchSuccess(fromProvider: string, toProvider: string): void {
+    this.log({
+      level: 'INFO',
+      stage: 'provider_switch_success',
+      fromProvider,
+      toProvider,
+    });
+  }
+
+  public stageProviderSwitchRejected(fromProvider: string, toProvider: string, reason: string): void {
+    this.log({
+      level: 'WARN',
+      stage: 'provider_switch_rejected',
+      fromProvider,
+      toProvider,
+      reason,
+    });
+  }
+
+  public stageProviderOwnershipAssigned(sequenceId?: number, provider?: 'cloud' | 'groq' | 'gemini' | 'local_qwen'): void {
+    this.log({
+      level: 'INFO',
+      stage: 'provider_ownership_assigned',
+      sequenceId,
+      provider,
     });
   }
 }

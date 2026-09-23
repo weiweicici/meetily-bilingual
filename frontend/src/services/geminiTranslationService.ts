@@ -4,6 +4,8 @@ import {
   GROQ_CANDIDATE_MODELS,
   GEMINI_CANDIDATE_MODELS,
 } from './unifiedTranslationScheduler.ts';
+import { isLocalQwenModelAvailable } from './localTranslationService.ts';
+import { translationDiagnosticLogger } from './translationDiagnosticLogger.ts';
 
 export {
   unifiedTranslationScheduler,
@@ -12,13 +14,68 @@ export {
   GEMINI_CANDIDATE_MODELS,
 };
 
+export type UserTranslationMode = 'cloud' | 'local_qwen';
+
 const LEGACY_API_KEY_STORAGE_KEY = 'gemini_api_key';
 const CLOUD_TRANSLATION_ENABLED_KEY = 'meetily_cloud_translation_enabled';
+const TRANSLATION_PROVIDER_MODE_KEY = 'meetily_translation_provider_mode';
 
 let isTauriDetected: boolean | null = null;
 // In-memory test mock state for non-Tauri / test environments
 let mockGeminiConfigured = false;
 let mockGroqConfigured = false;
+
+/**
+ * Get saved user translation provider mode preference (Default: 'cloud')
+ */
+export function getUserTranslationMode(): UserTranslationMode {
+  if (typeof localStorage === 'undefined') return 'cloud';
+  try {
+    const saved = localStorage.getItem(TRANSLATION_PROVIDER_MODE_KEY);
+    if (saved === 'local_qwen') return 'local_qwen';
+  } catch {
+    // Fallback to cloud
+  }
+  return 'cloud';
+}
+
+/**
+ * Set user translation provider mode preference with model availability validation.
+ */
+export async function setUserTranslationMode(
+  mode: UserTranslationMode
+): Promise<{ success: boolean; error?: string }> {
+  const fromProvider = unifiedTranslationScheduler.getProvider();
+
+  if (mode === 'local_qwen') {
+    const available = await isLocalQwenModelAvailable();
+    if (!available) {
+      translationDiagnosticLogger.stageProviderSwitchRejected(
+        fromProvider,
+        'local_qwen',
+        'Local Qwen model is not available.'
+      );
+      return {
+        success: false,
+        error: 'Local Qwen model is not available.',
+      };
+    }
+  }
+
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(TRANSLATION_PROVIDER_MODE_KEY, mode);
+    }
+    translationDiagnosticLogger.stageProviderSwitchRequest(fromProvider, mode);
+    unifiedTranslationScheduler.setProvider(mode);
+    translationDiagnosticLogger.stageProviderSwitchSuccess(fromProvider, mode);
+    return { success: true };
+  } catch (err) {
+    const errMsg = String((err as { message?: string })?.message || err);
+    translationDiagnosticLogger.stageProviderSwitchRejected(fromProvider, mode, errMsg);
+    return { success: false, error: errMsg };
+  }
+}
 
 /**
  * Check if the app is currently running inside Tauri
@@ -151,6 +208,9 @@ export async function initializeGeminiKey(): Promise<boolean> {
 
     // Attempt migration of legacy localStorage key if present
     await migrateLegacyGeminiKey();
+
+    // Restore saved provider mode preference
+    unifiedTranslationScheduler.setProvider(getUserTranslationMode());
 
     const groqOk = await isGroqConfigured();
     const geminiOk = await isGeminiConfigured();
@@ -305,12 +365,15 @@ export async function translateWithGemini(
     return null;
   }
 
+  const currentProvider = unifiedTranslationScheduler.getProvider();
+
   return unifiedTranslationScheduler.enqueue({
     id: `trans-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     text: trimmedText,
     apiKey,
     signal,
     sequenceId,
+    provider: currentProvider,
   });
 }
 
