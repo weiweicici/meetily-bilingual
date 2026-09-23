@@ -917,4 +917,109 @@ mod tests {
         assert!(!cleaned.reasoning_stripped);
         assert_eq!(clean_llm_markdown_detailed(markdown).markdown, markdown);
     }
+
+    // --- NAIT Classroom Template structural tests ---
+
+    #[test]
+    fn nait_template_final_report_prompt_contains_all_section_headings() {
+        use crate::summary::templates;
+
+        let template = templates::get_template("nait_classroom")
+            .expect("nait_classroom template must be loadable");
+
+        let prompt = build_final_report_system_prompt(
+            &template.to_section_instructions(),
+            &template.to_markdown_structure(),
+        );
+
+        // All 9 section titles must appear in the prompt so the LLM fills them correctly
+        for expected in [
+            "Today's Main Topics",
+            "MUST-DO / Instructor Requirements",
+            "Lab / Assignment Details",
+            "Deadlines / Important Dates",
+            "Exam / Quiz / Practical Test Information",
+            "Important Technical Notes",
+            "Instructor Warnings / Common Traps",
+            "Useful Classroom English",
+            "Quick Review",
+        ] {
+            assert!(
+                prompt.contains(expected),
+                "NAIT prompt is missing section heading: '{expected}'"
+            );
+        }
+    }
+
+    #[test]
+    fn nait_template_section_instructions_contain_anti_hallucination_guards() {
+        use crate::summary::templates;
+
+        let template = templates::get_template("nait_classroom")
+            .expect("nait_classroom template must be loadable");
+        let instructions = template.to_section_instructions();
+
+        // The deadline section must instruct the LLM not to invent deadlines
+        assert!(
+            instructions.contains("no") || instructions.contains("No") || instructions.contains("Never"),
+            "NAIT section instructions must contain an anti-hallucination directive"
+        );
+
+        // Lab section must instruct not to invent technical values
+        assert!(
+            instructions.contains("DO NOT invent") || instructions.contains("not stated"),
+            "NAIT lab section must include 'DO NOT invent' or 'not stated' to prevent hallucination"
+        );
+    }
+
+    #[test]
+    fn nait_template_section_instructions_preserve_technical_strings() {
+        use crate::summary::templates;
+
+        let template = templates::get_template("nait_classroom")
+            .expect("nait_classroom template must be loadable");
+        let instructions = template.to_section_instructions();
+
+        // The lab section must mention that technical values should be preserved exactly
+        assert!(
+            instructions.contains("IP address")
+                || instructions.contains("hostname")
+                || instructions.contains("command"),
+            "NAIT lab section instructions must mention technical value types to preserve"
+        );
+    }
+
+    #[test]
+    fn nait_template_quick_review_section_instruction_is_nonempty() {
+        use crate::summary::templates;
+
+        let template = templates::get_template("nait_classroom")
+            .expect("nait_classroom template must be loadable");
+
+        let quick_review_section = template
+            .sections
+            .iter()
+            .find(|s| s.title.contains("Quick Review") || s.title.contains("快速复盘"))
+            .expect("NAIT template must have a Quick Review section");
+
+        assert!(
+            !quick_review_section.instruction.trim().is_empty(),
+            "Quick review section must have a non-empty instruction"
+        );
+    }
+
+    #[test]
+    fn nait_template_has_exactly_nine_sections() {
+        use crate::summary::templates;
+
+        let template = templates::get_template("nait_classroom")
+            .expect("nait_classroom template must be loadable");
+
+        assert_eq!(
+            template.sections.len(),
+            9,
+            "NAIT classroom template must have exactly 9 sections, got {}",
+            template.sections.len()
+        );
+    }
 }

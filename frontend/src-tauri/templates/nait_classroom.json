@@ -1,0 +1,53 @@
+{
+  "name": "NAIT Classroom Summary",
+  "description": "Action-oriented bilingual class review document for NAIT ITSA program students. Captures instructor requirements, labs, assignments, deadlines, exam information, warnings, technical notes, useful classroom English, and a quick review in paired English-Chinese format.",
+  "sections": [
+    {
+      "title": "1. Today's Main Topics / 今日主要内容",
+      "instruction": "Briefly summarize the main technical topics covered in class using English-Chinese paired format (English paragraph/points first, immediately followed below by corresponding Simplified Chinese). Keep this concise — one or two short paragraphs. Do not explain basic IT concepts. Technical strings (commands, IP addresses, subnets, prefix lengths, ports, protocols, hostnames, service names) must be preserved exactly in original English and never translated or altered.",
+      "format": "paragraph"
+    },
+    {
+      "title": "2. MUST-DO / Instructor Requirements / 必须完成与老师要求",
+      "instruction": "THIS IS THE HIGHEST PRIORITY SECTION. Extract every actionable instruction given by the instructor. Include: tasks students must complete, labs, assignments, exercises, projects, required screenshots, required files, submissions, naming requirements, configuration requirements, preparation for next class, and anything the instructor explicitly said students must or should do. Present each item in paired English-Chinese format: English requirement first, immediately followed below by Simplified Chinese. Use Markdown checkboxes: '- [ ] English requirement\\n  中文要求说明'. Preserve all commands and configuration values exactly. Do not omit small requirements. Never invent requirements not stated in the transcript.",
+      "format": "list",
+      "item_format": "- [ ] English requirement\n  中文要求说明"
+    },
+    {
+      "title": "3. Lab / Assignment Details / Lab 与作业详情",
+      "instruction": "For every Lab, Assignment, Exercise, Project, or Practical Exam mentioned, extract the exact requirements available in the transcript using paired English-Chinese format (English explanation first, immediately followed below by Simplified Chinese). Preserve exact technical values whenever stated, including: hostname, username, password, IP address, subnet mask / prefix length, gateway, DNS, port number, protocol, VM name, operating system, RAM / CPU requirements, file name, folder/path, command, service, firewall rule, permission, screenshot requirement, submission format (e.g., `ipconfig /all`, `ping -6`, `192.168.126.2`, `/24`, `TCP 3389`). Do NOT translate commands, addresses, filenames, paths, hostnames, usernames, or configuration values into Chinese. If an exact value was not stated in the transcript, DO NOT invent one.",
+      "format": "paragraph"
+    },
+    {
+      "title": "4. Deadlines / Important Dates / 截止日期与重要时间",
+      "instruction": "Extract every date, deadline, due time, exam date, quiz date, submission date, and instructor reminder about timing using paired English-Chinese format (English first, immediately followed below by Simplified Chinese). If no deadline was clearly stated by the instructor, write: 'No clear deadline was stated in this transcript.\n本次课堂记录中未明确提及截止日期。' Never infer a deadline from context unless the instructor actually states it.",
+      "format": "list"
+    },
+    {
+      "title": "5. Exam / Quiz / Practical Test Information / 考试与测验信息",
+      "instruction": "Extract STRICTLY CONFIRMED exam, quiz, test, practical exam, or graded assessment information. Only classify information as CONFIRMED when the instructor explicitly connects it to an assessment (e.g., 'For today\\'s quiz...', 'This will be on the exam', 'For your practical...', 'You will be tested on...', 'The assessment requires...'). DO NOT infer exam content merely because the instructor said 'This is important', 'Remember this', 'Make sure you understand this', or 'You need to know how this works' (those belong under Important Technical Notes or Instructor Warnings). Student speculation or questions must NEVER be converted into confirmed instructor information. Present findings in paired English-Chinese format (English first, immediately followed below by Simplified Chinese). If no confirmed assessment information exists, output exactly:\nNo confirmed exam, quiz, or practical test information was stated in this transcript.\n本次课堂记录中没有明确确认的考试、测验或实操考试信息。",
+      "format": "paragraph"
+    },
+    {
+      "title": "6. Important Technical Notes / 重要技术知识点",
+      "instruction": "Summarize important technical concepts taught during class using paired English-Chinese format (English explanation first, immediately followed below by Simplified Chinese; bilingual subheadings like '### Connected Route / 直连路由' where appropriate). Assume the student already understands basic IT fundamentals — do not over-explain basics. Focus on: configuration logic, troubleshooting steps, commands, architecture, instructor demonstrations, important differences between technologies, and practical details. Keep technical strings (commands, IP addresses, subnets, prefix lengths, ports, protocols, hostnames, filenames) exact and unedited.",
+      "format": "paragraph"
+    },
+    {
+      "title": "7. Instructor Warnings / Common Traps / 老师提醒与常见陷阱",
+      "instruction": "Capture instructor warnings, cautions, and common mistakes (e.g., 'make sure', 'don't forget', 'be careful', 'you need to', 'I see students make this mistake', 'remember to'). Present each item in paired English-Chinese format (English warning first, immediately followed below by Simplified Chinese). Capture the actual technical requirement or trap, not just filler language. Do not include student commentary as instructor warnings.",
+      "format": "list"
+    },
+    {
+      "title": "8. Useful Classroom English / 实用课堂英语",
+      "instruction": "Extract authentic English expressions actually spoken in the classroom transcript intended for English learning (NOT ordinary IT vocabulary like 'next hop' or 'directly connected' unless having genuine language-learning value). Prioritize: natural teacher expressions, classroom chunks, phrasal verbs, idiomatic expressions, conversational transitions, and common North American classroom phrasing (e.g., 'keep in mind', 'what I\\'m getting at is...', 'let\\'s say...', 'what happens if...', 'you\\'re going to end up with...'). For each selected expression, provide: English expression → natural Simplified Chinese meaning → brief usage/context if useful. If no notable authentic classroom expressions appear in the transcript, write: 'No notable authentic classroom English expressions were identified in this transcript.\n本次课堂记录中未出现显著的实用课堂英语表达。' Never invent expressions not present in the transcript.",
+      "format": "list",
+      "item_format": "English expression → Simplified Chinese meaning (context)"
+    },
+    {
+      "title": "9. Quick Review / 快速复盘",
+      "instruction": "Provide approximately 3 to 5 highest-value quick review points summarizing the core takeaways of the class. Each point must use paired English + Simplified Chinese format (English point first, immediately followed below by Simplified Chinese). Do not repeat the entire summary — keep it concise and focused on essential concepts and actions.",
+      "format": "list"
+    }
+  ]
+}

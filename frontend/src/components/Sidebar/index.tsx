@@ -834,10 +834,10 @@ const Sidebar: React.FC = () => {
             <DialogTitle>Edit Meeting Title</DialogTitle>
           </VisuallyHidden>
           <div className="py-4">
-            <h3 className="text-lg font-semibold mb-4">Edit Meeting Title</h3>
+            <h3 className="text-lg font-semibold mb-4 text-gray-900 dark:text-zinc-100">Edit Meeting Title</h3>
             <div className="space-y-4">
               <div>
-                <label htmlFor="meeting-title" className="block text-sm font-medium text-gray-700 mb-2">
+                <label htmlFor="meeting-title" className="block text-sm font-medium text-gray-700 dark:text-zinc-300 mb-2">
                   Meeting Title
                 </label>
                 <input
@@ -852,7 +852,7 @@ const Sidebar: React.FC = () => {
                       handleEditCancel();
                     }
                   }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-zinc-700 rounded-md bg-white dark:bg-zinc-900 text-gray-900 dark:text-zinc-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent caret-blue-600 dark:caret-blue-400 selection:bg-blue-100 dark:selection:bg-blue-900 selection:text-gray-900 dark:selection:text-zinc-100"
                   placeholder="Enter meeting title"
                   autoFocus
                 />
@@ -862,7 +862,7 @@ const Sidebar: React.FC = () => {
           <DialogFooter>
             <button
               onClick={handleEditCancel}
-              className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors"
+              className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-zinc-300 bg-gray-100 dark:bg-zinc-800 hover:bg-gray-200 dark:hover:bg-zinc-700 rounded-md transition-colors"
             >
               Cancel
             </button>
