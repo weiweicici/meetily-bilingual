@@ -1472,6 +1472,105 @@ pub async fn api_delete_gemini_api_key() -> Result<(), String> {
     crate::credentials::CredentialManager::delete_gemini_api_key().await
 }
 
+/// Save the Groq API key into the OS Credential Vault.
+#[tauri::command]
+pub async fn api_save_groq_api_key(api_key: String) -> Result<(), String> {
+    crate::credentials::CredentialManager::set_groq_api_key(&api_key).await
+}
+
+/// Check whether the Groq API key is configured in the OS Credential Vault.
+#[tauri::command]
+pub async fn api_is_groq_configured() -> Result<bool, String> {
+    crate::credentials::CredentialManager::is_groq_configured().await
+}
+
+/// Delete the Groq API key from the OS Credential Vault.
+#[tauri::command]
+pub async fn api_delete_groq_api_key() -> Result<(), String> {
+    crate::credentials::CredentialManager::delete_groq_api_key().await
+}
+
+/// Translate text via Groq API directly from Rust backend.
+/// Uses OpenAI-compatible chat completion endpoint.
+/// Reads the API key directly from the OS secure credential store.
+#[tauri::command]
+pub async fn api_translate_groq_text<R: Runtime>(
+    _app: AppHandle<R>,
+    _state: tauri::State<'_, AppState>,
+    text: String,
+    model: Option<String>,
+) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+
+    let api_key = match crate::credentials::CredentialManager::get_groq_api_key().await? {
+        Some(k) if !k.is_empty() => k,
+        _ => return Err("Groq API key is not configured in secure credential store".to_string()),
+    };
+
+    let requested_model = model.as_deref().unwrap_or("openai/gpt-oss-20b");
+    let is_valid_model = !requested_model.is_empty()
+        && requested_model.len() <= 64
+        && requested_model
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/');
+
+    let safe_model = if is_valid_model {
+        requested_model
+    } else {
+        "openai/gpt-oss-20b"
+    };
+
+    let url = "https://api.groq.com/openai/v1/chat/completions";
+
+    let payload = serde_json::json!({
+        "model": safe_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a professional real-time speech translator for classroom sessions. Translate the following English speech transcript completely and faithfully into natural Simplified Chinese (简体中文). Preserve technical terminology, programming commands, variable names, IP addresses, product names, proper nouns, and acronyms. Do NOT truncate. Do NOT explain, converse, bullet-point, or add commentary. Output ONLY the raw Simplified Chinese translation text."
+            },
+            {
+                "role": "user",
+                "content": trimmed
+            }
+        ],
+        "temperature": 0.1,
+        "max_tokens": 1024
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status.as_u16(), err_body));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response JSON: {}", e))?;
+
+    let translated = body["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    Ok(translated)
+}
+
 /// Translate text via Google Gemini API directly from Rust backend.
 /// Restricted strictly to Google Gemini API domain and verified candidate models.
 /// Reads the API key directly from the OS secure credential store.
@@ -1494,16 +1593,17 @@ pub async fn api_translate_gemini_text<R: Runtime>(
         _ => return Err("Gemini API key is not configured in secure credential store".to_string()),
     };
 
-    let model_name = model.as_deref().unwrap_or("gemini-2.5-flash");
-    // Minimal verified low-latency translation models (verified 2026-09-20)
-    let allowed_models = [
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-    ];
-    let safe_model = if allowed_models.contains(&model_name) {
-        model_name
+    let requested_model = model.as_deref().unwrap_or("gemini-3.5-flash-lite");
+    let is_valid_model = !requested_model.is_empty()
+        && requested_model.len() <= 64
+        && requested_model
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_');
+
+    let safe_model = if is_valid_model {
+        requested_model
     } else {
-        "gemini-2.5-flash"
+        "gemini-3.5-flash-lite"
     };
 
     let url = format!(

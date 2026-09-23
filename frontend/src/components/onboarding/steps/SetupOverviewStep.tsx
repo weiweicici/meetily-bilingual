@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 
 export function SetupOverviewStep() {
-  const { goNext } = useOnboarding();
+  const { goNext, parakeetDownloaded, summaryModelDownloaded, completeOnboarding } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
 
   useEffect(() => {
@@ -30,23 +30,38 @@ export function SetupOverviewStep() {
     {
       number: 1,
       type: 'transcription',
-      title: 'Download Transcription Engine',
+      title: parakeetDownloaded ? 'Transcription Engine (Ready)' : 'Download Transcription Engine',
     },
     {
       number: 2,
       type: 'summarization',
-      title: 'Download Summarization Engine',
+      title: summaryModelDownloaded ? 'Summarization Engine (Ready)' : 'Download Summarization Engine',
     },
   ];
 
-  const handleContinue = () => {
-    goNext();
+  const handleContinue = async () => {
+    if (parakeetDownloaded && summaryModelDownloaded) {
+      if (isMac) {
+        goNext();
+      } else {
+        await completeOnboarding();
+        window.location.reload();
+      }
+    } else {
+      goNext();
+    }
   };
+
+  const allReady = parakeetDownloaded && summaryModelDownloaded;
 
   return (
     <OnboardingContainer
       title="Setup Overview"
-      description="Meetily requires that you download the Transcription & Summarization AI models for the software to work."
+      description={
+        allReady
+          ? "Your transcription and summarization AI models are ready."
+          : "Meetily requires that you download the Transcription & Summarization AI models for the software to work."
+      }
       step={2}
       totalSteps={isMac ? 4 : 3}
     >

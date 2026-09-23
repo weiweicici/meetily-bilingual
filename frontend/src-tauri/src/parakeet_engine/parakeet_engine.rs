@@ -279,22 +279,8 @@ impl ParakeetEngine {
         let models_dir = if let Some(dir) = models_dir {
             dir.join("parakeet") // Parakeet models in subdirectory
         } else {
-            // Fallback to default location
-            let current_dir = std::env::current_dir()
-                .map_err(|e| anyhow!("Failed to get current directory: {}", e))?;
-
-            if cfg!(debug_assertions) {
-                // Development mode
-                current_dir.join("models").join("parakeet")
-            } else {
-                // Production mode
-                dirs::data_dir()
-                    .or_else(|| dirs::home_dir())
-                    .ok_or_else(|| anyhow!("Could not find system data directory"))?
-                    .join("Meetily")
-                    .join("models")
-                    .join("parakeet")
-            }
+            // Fallback to canonical SharedModels location
+            crate::shared_models::get_shared_parakeet_models_dir()
         };
 
         log::info!("ParakeetEngine using models directory: {}", models_dir.display());

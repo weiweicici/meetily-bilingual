@@ -3,6 +3,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 const SERVICE_NAME: &str = "meetily";
 const USERNAME_GEMINI: &str = "gemini_api_key";
+const USERNAME_GROQ: &str = "groq_api_key";
 
 lazy_static::lazy_static! {
     /// Mutex to strictly serialize all credential operations across async tasks.
@@ -36,6 +37,8 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::sync::Mutex as StdMutex;
+#[cfg(test)]
+use std::collections::HashMap;
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,7 +52,7 @@ pub enum MockFailureMode {
 
 #[cfg(test)]
 struct MockStoreState {
-    secret: Option<String>,
+    secrets: HashMap<String, String>,
     failure_mode: MockFailureMode,
     fail_next_read: bool,
 }
@@ -57,7 +60,7 @@ struct MockStoreState {
 #[cfg(test)]
 lazy_static::lazy_static! {
     static ref MOCK_STORE: StdMutex<MockStoreState> = StdMutex::new(MockStoreState {
-        secret: None,
+        secrets: HashMap::new(),
         failure_mode: MockFailureMode::None,
         fail_next_read: false,
     });
@@ -71,7 +74,7 @@ static USE_MOCK_STORE: AtomicBool = AtomicBool::new(false);
 // checks USE_MOCK_STORE first.
 // ---------------------------------------------------------------------------
 
-fn set_raw_sync(key: &str) -> Result<(), String> {
+fn set_raw_sync(username: &str, key: &str) -> Result<(), String> {
     #[cfg(test)]
     if USE_MOCK_STORE.load(Ordering::SeqCst) {
         let mut lock = MOCK_STORE
@@ -81,28 +84,28 @@ fn set_raw_sync(key: &str) -> Result<(), String> {
             return Err("Simulated keyring write error".to_string());
         }
         if lock.failure_mode == MockFailureMode::ReadBackMismatch {
-            lock.secret = Some("corrupted_mismatched_key".to_string());
+            lock.secrets.insert(username.to_string(), "corrupted_mismatched_key".to_string());
             lock.failure_mode = MockFailureMode::None;
             return Ok(());
         }
         if lock.failure_mode == MockFailureMode::ReadBackError {
-            lock.secret = Some(key.to_string());
+            lock.secrets.insert(username.to_string(), key.to_string());
             lock.fail_next_read = true;
             lock.failure_mode = MockFailureMode::None;
             return Ok(());
         }
-        lock.secret = Some(key.to_string());
+        lock.secrets.insert(username.to_string(), key.to_string());
         return Ok(());
     }
 
-    let entry = Entry::new(SERVICE_NAME, USERNAME_GEMINI)
+    let entry = Entry::new(SERVICE_NAME, username)
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
     entry
         .set_password(key)
         .map_err(|e| format!("Failed to save credential to system keyring: {}", e))
 }
 
-fn get_raw_sync() -> Result<Option<String>, String> {
+fn get_raw_sync(username: &str) -> Result<Option<String>, String> {
     #[cfg(test)]
     if USE_MOCK_STORE.load(Ordering::SeqCst) {
         let mut lock = MOCK_STORE
@@ -115,10 +118,10 @@ fn get_raw_sync() -> Result<Option<String>, String> {
             lock.fail_next_read = false;
             return Err("Simulated keyring read-back error".to_string());
         }
-        return Ok(lock.secret.clone());
+        return Ok(lock.secrets.get(username).cloned());
     }
 
-    let entry = Entry::new(SERVICE_NAME, USERNAME_GEMINI)
+    let entry = Entry::new(SERVICE_NAME, username)
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
     match entry.get_password() {
         Ok(password) => {
@@ -137,17 +140,17 @@ fn get_raw_sync() -> Result<Option<String>, String> {
     }
 }
 
-fn delete_raw_sync() -> Result<(), String> {
+fn delete_raw_sync(username: &str) -> Result<(), String> {
     #[cfg(test)]
     if USE_MOCK_STORE.load(Ordering::SeqCst) {
         let mut lock = MOCK_STORE
             .lock()
             .map_err(|_| "Mock store lock poisoned".to_string())?;
-        lock.secret = None;
+        lock.secrets.remove(username);
         return Ok(());
     }
 
-    let entry = Entry::new(SERVICE_NAME, USERNAME_GEMINI)
+    let entry = Entry::new(SERVICE_NAME, username)
         .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
@@ -171,12 +174,66 @@ fn delete_raw_sync() -> Result<(), String> {
 pub struct CredentialManager;
 
 impl CredentialManager {
-    /// Asynchronous, non-blocking, serialized save operation.
-    /// 1. Backs up previous credential value;
-    /// 2. Writes candidate key to system keyring via spawn_blocking;
-    /// 3. Reads back and verifies using constant-time comparison;
-    /// 4. If verification fails, rolls back to previous credential and returns Err.
+    // --- Gemini API Key Operations ---
+
+    /// Asynchronous, non-blocking, serialized save operation for Gemini API Key.
     pub async fn set_gemini_api_key(candidate_key: &str) -> Result<(), String> {
+        Self::set_key_internal(USERNAME_GEMINI, candidate_key).await
+    }
+
+    /// Asynchronous, non-blocking, atomic migration operation for Gemini API Key.
+    pub async fn migrate_gemini_api_key(candidate_key: &str) -> Result<(), String> {
+        Self::set_gemini_api_key(candidate_key).await
+    }
+
+    /// Asynchronous, non-blocking, serialized get operation for Gemini API Key.
+    pub async fn get_gemini_api_key() -> Result<Option<String>, String> {
+        Self::get_key_internal(USERNAME_GEMINI).await
+    }
+
+    /// Asynchronous, non-blocking, serialized delete operation for Gemini API Key.
+    pub async fn delete_gemini_api_key() -> Result<(), String> {
+        Self::delete_key_internal(USERNAME_GEMINI).await
+    }
+
+    /// Asynchronous, non-blocking check whether the Gemini key is configured.
+    pub async fn is_gemini_configured() -> Result<bool, String> {
+        match Self::get_gemini_api_key().await {
+            Ok(Some(k)) => Ok(!k.trim().is_empty()),
+            Ok(None) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    // --- Groq API Key Operations ---
+
+    /// Asynchronous, non-blocking, serialized save operation for Groq API Key.
+    pub async fn set_groq_api_key(candidate_key: &str) -> Result<(), String> {
+        Self::set_key_internal(USERNAME_GROQ, candidate_key).await
+    }
+
+    /// Asynchronous, non-blocking, serialized get operation for Groq API Key.
+    pub async fn get_groq_api_key() -> Result<Option<String>, String> {
+        Self::get_key_internal(USERNAME_GROQ).await
+    }
+
+    /// Asynchronous, non-blocking, serialized delete operation for Groq API Key.
+    pub async fn delete_groq_api_key() -> Result<(), String> {
+        Self::delete_key_internal(USERNAME_GROQ).await
+    }
+
+    /// Asynchronous, non-blocking check whether the Groq key is configured.
+    pub async fn is_groq_configured() -> Result<bool, String> {
+        match Self::get_groq_api_key().await {
+            Ok(Some(k)) => Ok(!k.trim().is_empty()),
+            Ok(None) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    // --- Internal Helpers ---
+
+    async fn set_key_internal(username: &'static str, candidate_key: &str) -> Result<(), String> {
         let trimmed = candidate_key.trim().to_string();
         if trimmed.is_empty() {
             return Err("API key cannot be empty".to_string());
@@ -186,13 +243,13 @@ impl CredentialManager {
 
         tokio::task::spawn_blocking(move || {
             // Step 1: Backup previous credential value
-            let previous = get_raw_sync()?;
+            let previous = get_raw_sync(username)?;
 
             // Step 2: Write candidate key
-            set_raw_sync(&trimmed)?;
+            set_raw_sync(username, &trimmed)?;
 
             // Step 3: Read back and verify with constant-time comparison
-            let read_back = get_raw_sync();
+            let read_back = get_raw_sync(username);
             let verified = match read_back {
                 Ok(Some(ref val)) => constant_time_eq(val.as_bytes(), trimmed.as_bytes()),
                 _ => false,
@@ -201,9 +258,9 @@ impl CredentialManager {
             if !verified {
                 // Step 4: Rollback to previous state on failure
                 if let Some(ref old) = previous {
-                    let _ = set_raw_sync(old);
+                    let _ = set_raw_sync(username, old);
                 } else {
-                    let _ = delete_raw_sync();
+                    let _ = delete_raw_sync(username);
                 }
                 return Err(
                     "Credential store verification failed: read-back did not match written key"
@@ -217,40 +274,20 @@ impl CredentialManager {
         .map_err(|e| format!("Credential task join error: {}", e))?
     }
 
-    /// Asynchronous, non-blocking, atomic migration operation.
-    /// Backs up existing store value, writes candidate key, verifies read-back
-    /// using constant-time comparison. If verification fails, rolls back store
-    /// and returns Err, ensuring the caller retains localStorage.
-    pub async fn migrate_gemini_api_key(candidate_key: &str) -> Result<(), String> {
-        Self::set_gemini_api_key(candidate_key).await
-    }
-
-    /// Asynchronous, non-blocking, serialized get operation.
-    /// Returns the credential for internal backend use (e.g. single HTTP request).
-    pub async fn get_gemini_api_key() -> Result<Option<String>, String> {
+    async fn get_key_internal(username: &'static str) -> Result<Option<String>, String> {
         let _guard = CREDENTIAL_MUTEX.lock().await;
 
-        tokio::task::spawn_blocking(move || get_raw_sync())
+        tokio::task::spawn_blocking(move || get_raw_sync(username))
             .await
             .map_err(|e| format!("Credential task join error: {}", e))?
     }
 
-    /// Asynchronous, non-blocking, serialized delete operation.
-    pub async fn delete_gemini_api_key() -> Result<(), String> {
+    async fn delete_key_internal(username: &'static str) -> Result<(), String> {
         let _guard = CREDENTIAL_MUTEX.lock().await;
 
-        tokio::task::spawn_blocking(move || delete_raw_sync())
+        tokio::task::spawn_blocking(move || delete_raw_sync(username))
             .await
             .map_err(|e| format!("Credential task join error: {}", e))?
-    }
-
-    /// Asynchronous, non-blocking check whether the key is configured.
-    pub async fn is_gemini_configured() -> Result<bool, String> {
-        match Self::get_gemini_api_key().await {
-            Ok(Some(k)) => Ok(!k.trim().is_empty()),
-            Ok(None) => Ok(false),
-            Err(e) => Err(e),
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -265,7 +302,7 @@ impl CredentialManager {
     #[cfg(test)]
     pub fn reset_mock_store() {
         if let Ok(mut lock) = MOCK_STORE.lock() {
-            lock.secret = None;
+            lock.secrets.clear();
             lock.failure_mode = MockFailureMode::None;
             lock.fail_next_read = false;
         }
@@ -474,6 +511,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_groq_save_and_read_back_success() {
+        let _guard = TestEnvGuard::new();
+        let key = "gsk_test_groq_key_12345";
+
+        assert_eq!(
+            CredentialManager::is_groq_configured().await.unwrap(),
+            false
+        );
+        CredentialManager::set_groq_api_key(key).await.unwrap();
+
+        assert_eq!(
+            CredentialManager::is_groq_configured().await.unwrap(),
+            true
+        );
+        let read_back = CredentialManager::get_groq_api_key().await.unwrap();
+        assert_eq!(read_back, Some(key.to_string()));
+
+        CredentialManager::delete_groq_api_key().await.unwrap();
+        assert_eq!(
+            CredentialManager::is_groq_configured().await.unwrap(),
+            false
+        );
+    }
+
     #[test]
     fn test_tauri_command_signatures_do_not_return_key() {
         fn assert_returns_unit_result<F, Fut>(_: F)
@@ -501,5 +563,9 @@ mod tests {
         assert_returns_unit_result(crate::api::api_migrate_gemini_api_key);
         assert_returns_unit_result_0_args(crate::api::api_delete_gemini_api_key);
         assert_returns_bool_result(crate::api::api_is_gemini_configured);
+
+        assert_returns_unit_result(crate::api::api_save_groq_api_key);
+        assert_returns_unit_result_0_args(crate::api::api_delete_groq_api_key);
+        assert_returns_bool_result(crate::api::api_is_groq_configured);
     }
 }

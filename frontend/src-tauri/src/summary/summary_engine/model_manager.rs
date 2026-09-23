@@ -132,23 +132,8 @@ impl ModelManager {
         let models_dir = if let Some(dir) = models_dir {
             dir
         } else {
-            // Fallback: Use current directory in development
-            let current_dir = std::env::current_dir()
-                .map_err(|e| anyhow!("Failed to get current directory: {}", e))?;
-
-            if cfg!(debug_assertions) {
-                // Development mode
-                current_dir.join("models").join("summary")
-            } else {
-                // Production mode fallback (caller should provide path)
-                log::warn!("ModelManager: No models directory provided, using fallback path");
-                dirs::data_dir()
-                    .or_else(|| dirs::home_dir())
-                    .ok_or_else(|| anyhow!("Could not find system data directory"))?
-                    .join("Meetily")
-                    .join("models")
-                    .join("summary")
-            }
+            // Fallback to canonical SharedModels summary location
+            crate::shared_models::get_shared_summary_models_dir()
         };
 
         log::info!(

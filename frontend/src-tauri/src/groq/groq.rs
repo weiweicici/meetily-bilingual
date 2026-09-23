@@ -38,7 +38,7 @@ static MODELS_CACHE: RwLock<Option<CacheEntry>> = RwLock::new(None);
 const CACHE_TTL_SECS: u64 = 300;
 
 /// Fallback models when API fetch fails (matches frontend hardcoded values)
-const FALLBACK_MODELS: &[&str] = &["llama-3.3-70b-versatile"];
+const FALLBACK_MODELS: &[&str] = &["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 
 /// Get fallback models as GroqModel vec
 fn get_fallback_models() -> Vec<GroqModel> {

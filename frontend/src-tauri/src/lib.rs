@@ -50,9 +50,11 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod shared_models;
 pub mod state;
 pub mod summary;
 pub mod tray;
+pub mod translation_logger;
 pub mod utils;
 pub mod whisper_engine;
 
@@ -739,6 +741,13 @@ pub fn run() {
             api::api_is_gemini_configured,
             api::api_delete_gemini_api_key,
             api::api_translate_gemini_text,
+            api::api_save_groq_api_key,
+            api::api_is_groq_configured,
+            api::api_delete_groq_api_key,
+            api::api_translate_groq_text,
+            translation_logger::api_write_translation_log_line,
+            translation_logger::api_get_translation_log_path,
+            translation_logger::api_open_translation_log_folder,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,

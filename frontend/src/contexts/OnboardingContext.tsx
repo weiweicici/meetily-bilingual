@@ -370,10 +370,38 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
         console.log('[OnboardingContext] Verified status:', verifiedStatus);
 
+        if (verifiedStatus.completed && !status.completed) {
+          console.log('[OnboardingContext] Models verified on disk, auto-completing onboarding');
+          await completeOnboarding();
+          return;
+        }
+
         // Check if any downloads are active to restore isBackgroundDownloading state
         await checkActiveDownloads();
       } else {
-        await initializeSummaryModelSelection();
+        // No saved status in store yet - verify actual models on disk before starting fresh setup
+        const verifiedStatus = await verifyModelStatus({
+          version: '1.0',
+          completed: false,
+          current_step: 1,
+          model_status: { parakeet: 'not_downloaded', summary: 'not_downloaded' },
+          last_updated: new Date().toISOString(),
+        });
+
+        setCurrentStep(verifiedStatus.currentStep);
+        setCompleted(verifiedStatus.completed);
+        setParakeetDownloaded(verifiedStatus.parakeetDownloaded);
+        setSummaryModelDownloaded(verifiedStatus.summaryModelDownloaded);
+        if (verifiedStatus.selectedSummaryModel) {
+          setSelectedSummaryModel(verifiedStatus.selectedSummaryModel);
+        }
+
+        if (verifiedStatus.completed) {
+          console.log('[OnboardingContext] Fresh launch but shared models exist, completing onboarding');
+          await completeOnboarding();
+        } else {
+          await initializeSummaryModelSelection();
+        }
       }
     } catch (error) {
       console.error('[OnboardingContext] Failed to load onboarding status:', error);
@@ -420,17 +448,18 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
 
     // Determine the correct step based on verified status
-    // New simplified flow: Step 1: Welcome, Step 2: Setup Overview, Step 3: Download Progress, Step 4: Permissions (macOS)
+    // Simplified flow: Step 1: Welcome, Step 2: Setup Overview, Step 3: Download Progress, Step 4: Permissions (macOS)
     let currentStep = savedStatus.current_step;
     let completed = savedStatus.completed;
 
-    // Clamp step to new max (4)
-    if (currentStep > 4) {
+    // If both models are verified on disk, mark onboarding as completed
+    if (parakeetDownloaded && summaryModelDownloaded) {
+      completed = true;
+      currentStep = 4;
+    } else if (currentStep > 4) {
       currentStep = 3; // Go to download progress step
     }
 
-    // Trust the completed status - don't revert based on model downloads
-    // Downloads continue in background; user stays in main app regardless
     return {
       currentStep,
       completed,

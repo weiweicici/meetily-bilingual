@@ -243,8 +243,9 @@ pub fn get_model_path(app_data_dir: &PathBuf, model_name: &str) -> Result<PathBu
 }
 
 /// Get the models directory path for built-in AI
-pub fn get_models_directory(app_data_dir: &PathBuf) -> PathBuf {
-    app_data_dir.join("models").join("summary")
+/// Resolves to canonical SharedModels directory: %LOCALAPPDATA%\Meetily Bilingual\SharedModels\summary
+pub fn get_models_directory(_app_data_dir: &PathBuf) -> PathBuf {
+    crate::shared_models::get_shared_summary_models_dir()
 }
 
 // ============================================================================

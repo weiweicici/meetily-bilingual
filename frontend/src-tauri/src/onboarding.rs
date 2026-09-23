@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use log::{info, warn, error};
 use anyhow::Result;
@@ -132,16 +132,37 @@ pub async fn reset_onboarding_status<R: Runtime>(
 pub async fn get_onboarding_status<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<Option<OnboardingStatus>, String> {
-    let status = load_onboarding_status(&app)
+    let mut status = load_onboarding_status(&app)
         .await
         .map_err(|e| format!("Failed to load onboarding status: {}", e))?;
 
-    // Return None if it's the default (never saved before)
-    // Check if we have any saved data by seeing if the store has the key
     let store = app.store("onboarding-status.json")
         .map_err(|e| format!("Failed to access store: {}", e))?;
 
-    if store.get("status").is_none() {
+    let is_persisted = store.get("status").is_some();
+
+    // If onboarding is not marked completed or not yet persisted, validate actual models in SharedModels
+    if !status.completed || !is_persisted {
+        if let Some(summary_model) = crate::shared_models::check_shared_models_readiness() {
+            info!(
+                "Shared models verified valid on disk (Parakeet v3 and {}). Auto-completing onboarding for this application identifier.",
+                summary_model
+            );
+            let state: tauri::State<'_, AppState> = app.state();
+            if let Err(e) = complete_onboarding(app.clone(), state, summary_model.clone()).await {
+                error!("Failed to auto-complete onboarding with valid shared models: {}", e);
+            } else {
+                status.completed = true;
+                status.current_step = 4;
+                status.model_status.parakeet = "downloaded".to_string();
+                status.model_status.summary = "downloaded".to_string();
+                status.model_status.selected_summary_model = Some(summary_model);
+                return Ok(Some(status));
+            }
+        }
+    }
+
+    if !is_persisted {
         Ok(None)
     } else {
         Ok(Some(status))

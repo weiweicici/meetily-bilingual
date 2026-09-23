@@ -12,6 +12,11 @@ import {
   translateWithGemini,
 } from '@/services/geminiTranslationService';
 import { TranslationSessionTracker } from '@/services/translationSessionTracker';
+import {
+  translationDiagnosticLogger,
+  classifyTranslationError,
+} from '@/services/translationDiagnosticLogger';
+import { translationStatsTracker } from '@/services/translationStatsTracker';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -79,13 +84,21 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Non-blocking async translation request handler
   const requestTranslation = useCallback(
     (sequenceId: number, text: string, isPartial = false) => {
+      const textLen = text ? text.trim().length : 0;
       const check = trackerRef.current.shouldRequest(sequenceId, text, isPartial);
-      if (!check.shouldRequest) return;
+
+      if (!check.shouldRequest) {
+        translationDiagnosticLogger.stageSkipped(sequenceId, 'tracker_suppressed', isPartial, textLen);
+        return;
+      }
+
+      translationDiagnosticLogger.stageEligible(sequenceId, textLen, isPartial);
+      translationStatsTracker.recordEligibleSegment();
 
       // Asynchronous background translation - never blocks the English transcript pipeline
       (async () => {
         try {
-          const translation = await translateWithGemini(text.trim());
+          const translation = await translateWithGemini(text.trim(), undefined, undefined, sequenceId);
           const accepted = trackerRef.current.commitResult(
             check.sessionId,
             sequenceId,
@@ -93,11 +106,17 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             translation
           );
 
+          translationDiagnosticLogger.stageTrackerCommit(sequenceId, accepted, check.version);
+
           if (accepted && translation) {
             setTranslationForSequence(sequenceId, translation, text.trim());
+            translationDiagnosticLogger.stageMapUpdate(sequenceId);
           }
         } catch (error) {
           trackerRef.current.commitResult(check.sessionId, sequenceId, check.version, null);
+          const category = classifyTranslationError(error);
+          translationDiagnosticLogger.stageAllProvidersFailed(sequenceId, category);
+          translationStatsTracker.recordAllProvidersFailed();
           console.error(
             `[Translation] Translation failed for sequence ${sequenceId}:`,
             error instanceof Error ? error.message : 'Unknown error'
@@ -184,6 +203,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         // Listen for recording-started event
         unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
           try {
+            // Reset translation session stats for fresh recording session
+            translationStatsTracker.reset();
+
             // Generate unique meeting ID
             const meetingId = `meeting-${Date.now()}`;
             setCurrentMeetingId(meetingId);

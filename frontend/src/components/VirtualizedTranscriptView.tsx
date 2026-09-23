@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
+import { translationDiagnosticLogger } from "@/services/translationDiagnosticLogger";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -90,7 +91,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
             <div className="flex items-start gap-2">
                 <Tooltip>
                     <TooltipTrigger>
-                        <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
+                        <span className="text-xs text-gray-400 dark:text-zinc-500 mt-1 flex-shrink-0 min-w-[50px]">
                             {formatRecordingTime(timestamp)}
                         </span>
                     </TooltipTrigger>
@@ -102,14 +103,14 @@ const TranscriptSegment = memo(function TranscriptSegment({
                 </Tooltip>
                 <div className="flex-1">
                     {isStreaming ? (
-                        <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
-                            <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        <div className="bg-gray-100 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2">
+                            <p className="text-base text-gray-800 dark:text-zinc-100 leading-relaxed">{displayText}</p>
                         </div>
                     ) : (
-                        <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        <p className="text-base text-gray-800 dark:text-zinc-100 leading-relaxed">{displayText}</p>
                     )}
                     {translation && (
-                        <p className="text-sm text-gray-500 leading-relaxed mt-1">
+                        <p className="text-sm text-gray-600 dark:text-cyan-300 font-medium leading-relaxed mt-1">
                             {translation}
                         </p>
                     )}
@@ -183,6 +184,21 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         enableStreaming
     );
 
+    // Observability Stage H: Log UI translation display once per sequence_id (zero render-loop overhead)
+    const renderedSeqRef = useRef<Set<number>>(new Set());
+    useEffect(() => {
+        if (!translationMap) return;
+        for (const seg of segments) {
+            if (seg.sequence_id !== undefined && !renderedSeqRef.current.has(seg.sequence_id)) {
+                const trans = translationMap[seg.sequence_id] || (seg.text ? translationMap[seg.text.trim()] : undefined);
+                if (trans) {
+                    renderedSeqRef.current.add(seg.sequence_id);
+                    translationDiagnosticLogger.stageUiRendered(seg.sequence_id);
+                }
+            }
+        }
+    }, [translationMap, segments]);
+
     // Infinite scroll: IntersectionObserver to trigger loading more
     useEffect(() => {
         if (!onLoadMore || !hasMore || isLoadingMore || isRecording || segments.length === 0) {
@@ -247,7 +263,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
             <AnimatePresence>
                 {isRecording && (
-                    <div className="sticky top-0 z-10 bg-white pb-2">
+                    <div className="sticky top-0 z-10 bg-white dark:bg-zinc-950 pb-2">
                         <RecordingStatusBar isPaused={isPaused} />
                     </div>
                 )}
