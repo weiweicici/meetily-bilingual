@@ -452,7 +452,7 @@ pub fn run() {
 
     let mut builder = tauri::Builder::default();
 
-    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    #[cfg(all(not(debug_assertions), any(target_os = "macos", windows, target_os = "linux")))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
             log_info!(
@@ -598,9 +598,34 @@ pub fn run() {
                 log::warn!("Failed to resolve resource directory for templates");
             }
 
+            // Explicitly show and focus main window on startup
+            if let Some(window) = _app.get_webview_window("main") {
+                log::info!("Explicitly showing and focusing main window on startup");
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            } else {
+                log::warn!("Main window 'main' not found during setup");
+            }
+
+            let handle = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+                if let Some(window) = handle.get_webview_window("main") {
+                    log::info!("Delayed check (1s): is_visible={:?}, is_minimized={:?}, position={:?}, size={:?}", 
+                        window.is_visible(), window.is_minimized(), window.outer_position(), window.outer_size());
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                } else {
+                    log::warn!("Delayed check (1s): 'main' window NOT found!");
+                }
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
+            log::info!("Window event for '{}': {:?}", window.label(), event);
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
@@ -745,6 +770,8 @@ pub fn run() {
             api::api_is_groq_configured,
             api::api_delete_groq_api_key,
             api::api_translate_groq_text,
+            api::api_check_local_qwen_health,
+            api::api_translate_local_qwen_batch,
             translation_logger::api_write_translation_log_line,
             translation_logger::api_get_translation_log_path,
             translation_logger::api_open_translation_log_folder,

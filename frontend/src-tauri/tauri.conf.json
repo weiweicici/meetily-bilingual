@@ -7,19 +7,23 @@
     "build": {
         "frontendDist": "../out",
         "devUrl": "http://localhost:3118",
-        "beforeDevCommand": "pnpm dev",
+        "beforeDevCommand": "",
         "beforeBuildCommand": "pnpm build"
     },
     "app": {
         "windows": [
             {
+                "label": "main",
                 "title": "Meetily Bilingual",
                 "width": 1100,
                 "height": 700,
                 "resizable": true,
                 "fullscreen": false,
                 "theme": "Light",
-                "decorations": true
+                "decorations": true,
+                "visible": true,
+                "center": true,
+                "focus": true
             }
         ],
         "macOSPrivateApi": true,

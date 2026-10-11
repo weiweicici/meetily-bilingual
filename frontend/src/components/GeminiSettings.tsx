@@ -19,12 +19,22 @@ import {
   getUserTranslationMode,
   setUserTranslationMode,
   UserTranslationMode,
+  getLocalQwenEndpoint,
+  setLocalQwenEndpoint,
+  checkLocalQwenHealth,
+  DEFAULT_LOCAL_QWEN_ENDPOINT,
 } from '@/services/geminiTranslationService';
 import { translationStatsTracker, SessionTranslationStats } from '@/services/translationStatsTracker';
+import { Server, RefreshCw } from 'lucide-react';
 
 export function GeminiSettings() {
   // Translation Provider Mode State
   const [providerMode, setProviderMode] = useState<UserTranslationMode>('cloud');
+
+  // Local Qwen3 (Mac mini) State
+  const [localEndpoint, setLocalEndpoint] = useState<string>(DEFAULT_LOCAL_QWEN_ENDPOINT);
+  const [isTestingLocal, setIsTestingLocal] = useState<boolean>(false);
+  const [localHealth, setLocalHealth] = useState<{ available: boolean; model?: string; latencyMs?: number; error?: string } | null>(null);
 
   // Groq State (Primary)
   const [groqKey, setGroqKey] = useState<string>('');
@@ -91,6 +101,15 @@ export function GeminiSettings() {
       setGeminiKey('');
       setIsCloudEnabled(isCloudTranslationEnabled());
       setProviderMode(getUserTranslationMode());
+      setLocalEndpoint(getLocalQwenEndpoint());
+
+      // Check Local Qwen3 Health
+      try {
+        const health = await checkLocalQwenHealth();
+        setLocalHealth(health);
+      } catch {
+        // Non fatal
+      }
     }
 
     loadStatus();
@@ -102,13 +121,47 @@ export function GeminiSettings() {
     if (result.success) {
       setProviderMode(mode);
       if (mode === 'cloud') {
-        toast.success('已切换至 Cloud 翻译模式');
+        toast.success('已切换至 Cloud 翻译模式 (Groq + Gemini)');
       } else {
-        toast.success('已切换至 Local Qwen 本地 AI 翻译模式');
+        toast.success('已切换至 Local Qwen3 (Mac mini) 局域网私有翻译');
       }
     } else {
-      toast.error(result.error || 'Local Qwen model is not available.');
+      toast.error(result.error || 'Local Qwen3 服务暂不可达，请检查 Mac mini 与 Tailscale 连接');
     }
+  };
+
+  const handleTestLocalConnection = async () => {
+    setIsTestingLocal(true);
+    try {
+      const health = await checkLocalQwenHealth(localEndpoint);
+      setLocalHealth(health);
+      if (health.available) {
+        toast.success(`Local Qwen3 连接正常！模型: ${health.model} (延迟: ${health.latencyMs}ms)`);
+      } else {
+        toast.error(`连接失败: ${health.error || '无法访问 Mac mini 翻译服务'}`);
+      }
+    } catch (e) {
+      toast.error(`测试连接失败: ${e}`);
+    } finally {
+      setIsTestingLocal(false);
+    }
+  };
+
+  const handleSaveLocalEndpoint = () => {
+    const clean = localEndpoint.trim();
+    if (!clean) {
+      toast.info('请输入有效的服务地址');
+      return;
+    }
+    setLocalQwenEndpoint(clean);
+    toast.success('Local Qwen3 服务地址已保存');
+    handleTestLocalConnection();
+  };
+
+  const handleResetLocalEndpoint = () => {
+    setLocalEndpoint(DEFAULT_LOCAL_QWEN_ENDPOINT);
+    setLocalQwenEndpoint(DEFAULT_LOCAL_QWEN_ENDPOINT);
+    toast.info('已重置为默认 Mac mini 节点地址');
   };
 
   const handleOpenLogFolder = async () => {
@@ -214,18 +267,25 @@ export function GeminiSettings() {
 
   // --- Global Toggle ---
   const handleToggleCloudTranslation = (enabled: boolean) => {
-    const hasAnyConfigured = isGroqConfig || isGeminiConfig || groqKey.trim() || geminiKey.trim();
-    if (enabled && !hasAnyConfigured) {
-      toast.error('请先配置并保存 Groq 或 Gemini API 密钥后再启用实时翻译');
-      return;
-    }
-
-    setCloudTranslationEnabled(enabled);
-    setIsCloudEnabled(enabled);
-
     if (enabled) {
+      if (providerMode === 'local_qwen') {
+        setCloudTranslationEnabled(true);
+        setIsCloudEnabled(true);
+        toast.success('已开启实时中英翻译 (Local Qwen3 Mac mini 本地节点)');
+        return;
+      }
+
+      const hasAnyConfigured = isGroqConfig || isGeminiConfig || groqKey.trim() || geminiKey.trim();
+      if (!hasAnyConfigured) {
+        toast.error('请先配置并保存 Groq 或 Gemini API 密钥，或切换至 Local Qwen3 本地节点');
+        return;
+      }
+      setCloudTranslationEnabled(true);
+      setIsCloudEnabled(true);
       toast.success('已开启实时中英翻译 (首选 Groq，备用 Gemini)');
     } else {
+      setCloudTranslationEnabled(false);
+      setIsCloudEnabled(false);
       toast.info('已停用实时翻译，后续请求已终止');
     }
   };
@@ -238,14 +298,26 @@ export function GeminiSettings() {
         <div className="flex items-center gap-2">
           <Languages className="w-5 h-5 text-blue-600 dark:text-blue-400" />
           <h3 className="text-lg font-semibold text-gray-900 dark:text-zinc-100">
-            实时中英翻译 (Groq + Gemini 双通道)
+            实时中英翻译 (Cloud + Local Qwen3)
           </h3>
         </div>
         <div className="flex items-center gap-2">
-          {hasConfiguredKeys ? (
+          {providerMode === 'local_qwen' ? (
+            localHealth?.available ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Mac mini 已连接
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                <AlertCircle className="w-3.5 h-3.5" />
+                Mac mini 离线
+              </span>
+            )
+          ) : hasConfiguredKeys ? (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-50 dark:bg-green-950/40 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800">
               <CheckCircle2 className="w-3.5 h-3.5" />
-              凭据已就绪
+              云端凭据已就绪
             </span>
           ) : (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
@@ -268,7 +340,7 @@ export function GeminiSettings() {
       </div>
 
       <p className="text-sm text-gray-600 dark:text-zinc-400 mb-5 leading-relaxed">
-        为语音转录提供极速实时中英双语字幕。支持在在线 Cloud 通道与 Local Qwen 本地模型之间安全平滑热切换。
+        为语音转录提供极速实时中英双语字幕。支持在 Cloud 通道 (Groq + Gemini) 与 Local Qwen3 (Mac mini 私有网络节点) 之间平滑热切换。
       </p>
 
       {/* Translation Provider Selector */}
@@ -276,10 +348,10 @@ export function GeminiSettings() {
         <div className="flex items-center justify-between mb-3">
           <div className="text-sm font-medium text-gray-900 dark:text-zinc-100 flex items-center gap-2">
             <Zap className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            Translation Provider
+            Translation Provider (翻译源选择)
           </div>
           <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300">
-            {providerMode === 'local_qwen' ? 'Local Qwen selected' : 'Cloud selected'}
+            {providerMode === 'local_qwen' ? 'Local Qwen3 (Mac mini)' : 'Cloud (Groq + Gemini)'}
           </span>
         </div>
 
@@ -300,9 +372,9 @@ export function GeminiSettings() {
               className="mt-0.5 text-blue-600"
             />
             <div>
-              <div className="font-semibold text-sm">Cloud</div>
+              <div className="font-semibold text-sm">Cloud (Groq + Gemini)</div>
               <div className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
-                Fast translation using online AI. Requires internet.
+                首选 Groq (20b/120b)，限流或故障自动降级至 Gemini。需互联网。
               </div>
             </div>
           </label>
@@ -323,9 +395,9 @@ export function GeminiSettings() {
               className="mt-0.5 text-blue-600"
             />
             <div>
-              <div className="font-semibold text-sm">Local Qwen</div>
+              <div className="font-semibold text-sm">Local Qwen3 (Mac mini)</div>
               <div className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
-                Runs on this computer. Transcript is not sent to cloud translation services.
+                通过 Tailscale 局域网访问 Mac mini Ollama qwen3:1.7b。私密安全。
               </div>
             </div>
           </label>
@@ -338,10 +410,10 @@ export function GeminiSettings() {
           <div className="space-y-0.5">
             <div className="text-sm font-medium text-gray-900 dark:text-zinc-100 flex items-center gap-2">
               <Cloud className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              启用实时双语字幕翻译
+              启用实时双语字幕翻译 (Real-Time Translation)
             </div>
             <p className="text-xs text-gray-500 dark:text-zinc-400">
-              开启后，录音确认段落将自动翻译并实时渲染在英文字幕下方。
+              开启后，录音确认段落将自动翻译并实时渲染在英文字幕下方。关闭后停止发起新请求。
             </p>
           </div>
           <label className="relative inline-flex items-center cursor-pointer">
@@ -349,10 +421,9 @@ export function GeminiSettings() {
               type="checkbox"
               className="sr-only peer"
               checked={isCloudEnabled}
-              disabled={!hasConfiguredKeys && !groqKey.trim() && !geminiKey.trim()}
               onChange={(e) => handleToggleCloudTranslation(e.target.checked)}
             />
-            <div className="w-11 h-6 bg-gray-200 dark:bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-500 peer-disabled:opacity-50 peer-disabled:cursor-not-allowed"></div>
+            <div className="w-11 h-6 bg-gray-200 dark:bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600 dark:peer-checked:bg-blue-500"></div>
           </label>
         </div>
 
@@ -364,13 +435,80 @@ export function GeminiSettings() {
           </div>
           <ul className="list-disc list-inside space-y-0.5 text-blue-800/90 dark:text-blue-300/90 leading-relaxed">
             <li>原始录音文件始终保存在本地，绝不上传至任何云端；</li>
-            <li>仅最终确认的转录文本片段会通过加密 HTTPS 发送用于翻译；</li>
+            <li>Local Qwen3 模式仅通过 Tailscale 专用私有网络与 Mac mini 通信；</li>
             <li>API 密钥由系统凭据库独立隔离保管，不留存明文，不记录日志。</li>
           </ul>
         </div>
       </div>
 
       <div className="space-y-6 max-w-xl">
+        {/* --- Local Qwen3 (Mac mini) Configuration --- */}
+        {providerMode === 'local_qwen' && (
+          <div className="p-4 rounded-lg border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/30 dark:bg-indigo-950/10 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Server className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <Label className="text-sm font-semibold text-gray-900 dark:text-zinc-100">
+                  Local Qwen3 (Mac mini) 服务节点配置
+                </Label>
+              </div>
+              {localHealth?.available ? (
+                <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> 已连接 ({localHealth.model}, {localHealth.latencyMs}ms)
+                </span>
+              ) : (
+                <span className="text-xs text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" /> 未连接
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-gray-600 dark:text-zinc-400">
+                Tailscale Private URL / 服务端点:
+              </Label>
+              <Input
+                type="text"
+                className="bg-white dark:bg-zinc-800 dark:border-zinc-700 dark:text-zinc-100 font-mono text-xs"
+                value={localEndpoint}
+                onChange={(e) => setLocalEndpoint(e.target.value)}
+                placeholder="http://jeffsmac-mini.taile61984.ts.net:8080"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleSaveLocalEndpoint}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs h-8 px-3"
+              >
+                保存地址
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isTestingLocal}
+                onClick={handleTestLocalConnection}
+                className="text-xs h-8 px-3 gap-1.5"
+              >
+                {isTestingLocal ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Activity className="w-3.5 h-3.5 text-indigo-500" />}
+                测试连接
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleResetLocalEndpoint}
+                className="text-xs h-8 px-2 text-gray-500 hover:text-gray-700 dark:text-zinc-400 ml-auto"
+              >
+                重置默认
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* --- Groq API Key Section (Primary) --- */}
         <div className="p-4 rounded-lg border border-orange-200 dark:border-orange-900/50 bg-orange-50/30 dark:bg-orange-950/10 space-y-3">
           <div className="flex items-center justify-between">

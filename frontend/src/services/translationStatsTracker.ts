@@ -12,6 +12,9 @@ export type TranslationHealthStatus =
   | 'groq_inflight'
   | 'groq_429'
   | 'gemini_fallback'
+  | 'local_qwen_success'
+  | 'local_qwen_inflight'
+  | 'local_qwen_error'
   | 'all_failed';
 
 export interface SessionTranslationStats {
@@ -24,6 +27,9 @@ export interface SessionTranslationStats {
   geminiFallbackAttempts: number;
   geminiSuccesses: number;
   geminiFailures: number;
+  localQwenRequests: number;
+  localQwenSuccesses: number;
+  localQwenFailures: number;
   allProviderFailures: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
@@ -50,6 +56,9 @@ class TranslationStatsTracker {
   private geminiFallbackAttempts = 0;
   private geminiSuccesses = 0;
   private geminiFailures = 0;
+  private localQwenRequests = 0;
+  private localQwenSuccesses = 0;
+  private localQwenFailures = 0;
   private allProviderFailures = 0;
   private latencies: number[] = [];
   private currentQueueDepth = 0;
@@ -77,6 +86,9 @@ class TranslationStatsTracker {
     this.geminiFallbackAttempts = 0;
     this.geminiSuccesses = 0;
     this.geminiFailures = 0;
+    this.localQwenRequests = 0;
+    this.localQwenSuccesses = 0;
+    this.localQwenFailures = 0;
     this.allProviderFailures = 0;
     this.latencies = [];
     this.currentQueueDepth = 0;
@@ -182,6 +194,29 @@ class TranslationStatsTracker {
     this.notify();
   }
 
+  public recordLocalQwenRequestStart(): void {
+    this.localQwenRequests++;
+    this.recordHttpRequestExecuted();
+    this.currentHealth = 'local_qwen_inflight';
+    this.lastUpdated = Date.now();
+    this.notify();
+  }
+
+  public recordLocalQwenSuccess(latencyMs: number): void {
+    this.localQwenSuccesses++;
+    this.latencies.push(latencyMs);
+    this.currentHealth = 'local_qwen_success';
+    this.lastUpdated = Date.now();
+    this.notify();
+  }
+
+  public recordLocalQwenFailure(): void {
+    this.localQwenFailures++;
+    this.currentHealth = 'local_qwen_error';
+    this.lastUpdated = Date.now();
+    this.notify();
+  }
+
   public recordAllProvidersFailed(): void {
     this.allProviderFailures++;
     this.currentHealth = 'all_failed';
@@ -196,8 +231,10 @@ class TranslationStatsTracker {
   }
 
   public getStats(): SessionTranslationStats {
-    const totalSuccess = this.groqSuccesses + this.geminiSuccesses;
-    const totalAttempts = this.totalEligible > 0 ? this.totalEligible : (this.groqRequests + this.allProviderFailures);
+    const totalSuccess = this.groqSuccesses + this.geminiSuccesses + this.localQwenSuccesses;
+    const totalAttempts = this.totalEligible > 0
+      ? this.totalEligible
+      : (this.groqRequests + this.localQwenRequests + this.allProviderFailures);
     const successRatePct = totalAttempts > 0 ? Math.round((totalSuccess / totalAttempts) * 100) : 100;
 
     const now = Date.now();
@@ -222,6 +259,9 @@ class TranslationStatsTracker {
       geminiFallbackAttempts: this.geminiFallbackAttempts,
       geminiSuccesses: this.geminiSuccesses,
       geminiFailures: this.geminiFailures,
+      localQwenRequests: this.localQwenRequests,
+      localQwenSuccesses: this.localQwenSuccesses,
+      localQwenFailures: this.localQwenFailures,
       allProviderFailures: this.allProviderFailures,
       avgLatencyMs,
       maxLatencyMs,
@@ -261,8 +301,13 @@ class TranslationStatsTracker {
       `- 备用成功次数: ${s.geminiSuccesses}`,
       `- 备用失败次数: ${s.geminiFailures}`,
       ``,
+      `#### 🖥️ Local Qwen3 (Mac mini)`,
+      `- 本地请求数: ${s.localQwenRequests}`,
+      `- 本地成功次数: ${s.localQwenSuccesses}`,
+      `- 本地失败次数: ${s.localQwenFailures}`,
+      ``,
       `#### ⚠️ 最终未完成`,
-      `- 双通道全失败: ${s.allProviderFailures}`,
+      `- 全失败段落数: ${s.allProviderFailures}`,
     ].join('\n');
   }
 

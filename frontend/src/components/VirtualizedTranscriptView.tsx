@@ -10,6 +10,8 @@ import { RecordingStatusBar } from "./RecordingStatusBar";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 import { translationDiagnosticLogger } from "@/services/translationDiagnosticLogger";
+import { useTranscripts } from "@/contexts/TranscriptContext";
+import { Languages, Loader2 } from "lucide-react";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -30,6 +32,8 @@ export interface VirtualizedTranscriptViewProps {
     showConfidence?: boolean;
     /** Completely disable auto-scroll behavior (for meeting details page) */
     disableAutoScroll?: boolean;
+    /** Manual translation callback (optional override) */
+    onManualTranslate?: (sequenceId: number, text: string) => Promise<boolean>;
 
     // Pagination props (infinite scroll)
     hasMore?: boolean;
@@ -66,28 +70,45 @@ function cleanStopWords(text: string): string {
     return cleanedText.replace(/\s+/g, ' ').trim();
 }
 
-// Memoized transcript segment component
+// Memoized transcript segment component with manual recovery button
 const TranscriptSegment = memo(function TranscriptSegment({
     id,
+    sequence_id,
     timestamp,
     text,
     confidence,
     isStreaming,
     showConfidence,
     translation,
+    onManualTranslate,
 }: {
     id: string;
+    sequence_id?: number;
     timestamp: number;
     text: string;
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
     translation?: string;
+    onManualTranslate?: (sequenceId: number, text: string) => Promise<boolean>;
 }) {
+    const [isTranslating, setIsTranslating] = useState(false);
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
+    const handleManualTranslate = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (isTranslating || !onManualTranslate) return;
+        setIsTranslating(true);
+        try {
+            const seqId = sequence_id !== undefined ? sequence_id : (parseInt(id, 10) || 0);
+            await onManualTranslate(seqId, text);
+        } finally {
+            setIsTranslating(false);
+        }
+    };
+
     return (
-        <div id={`segment-${id}`} className="mb-3">
+        <div id={`segment-${id}`} className="group mb-3 relative">
             <div className="flex items-start gap-2">
                 <Tooltip>
                     <TooltipTrigger>
@@ -109,10 +130,32 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     ) : (
                         <p className="text-base text-gray-800 dark:text-zinc-100 leading-relaxed">{displayText}</p>
                     )}
-                    {translation && (
+                    {translation ? (
                         <p className="text-sm text-gray-600 dark:text-cyan-300 font-medium leading-relaxed mt-1">
                             {translation}
                         </p>
+                    ) : onManualTranslate && text.trim() && text.trim() !== '[Silence]' && (
+                        <div className="mt-1 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                            <button
+                                type="button"
+                                onClick={handleManualTranslate}
+                                disabled={isTranslating}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-900/60 border border-blue-200 dark:border-blue-800 transition-colors cursor-pointer"
+                                title="Translate this segment"
+                            >
+                                {isTranslating ? (
+                                    <>
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        <span>Translating...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Languages className="w-3 h-3" />
+                                        <span>Translate</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
                     )}
                 </div>
             </div>
@@ -130,12 +173,16 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     enableStreaming = false,
     showConfidence = true,
     disableAutoScroll = false,
+    onManualTranslate: propOnManualTranslate,
     hasMore = false,
     isLoadingMore = false,
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
 }) => {
+    const transcriptCtx = useTranscripts();
+    const effectiveManualTranslate = propOnManualTranslate || transcriptCtx?.requestManualTranslation;
+
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
     // Ref for infinite scroll trigger element
@@ -326,11 +373,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                 >
                                     <TranscriptSegment
                                         id={segment.id}
+                                        sequence_id={segment.sequence_id}
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        onManualTranslate={effectiveManualTranslate}
                                         translation={
                                             segment.translation
                                             || (segment.sequence_id !== undefined ? translationMap?.[segment.sequence_id] : undefined)
@@ -388,11 +437,13 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                 >
                                     <TranscriptSegment
                                         id={segment.id}
+                                        sequence_id={segment.sequence_id}
                                         timestamp={segment.timestamp}
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        onManualTranslate={effectiveManualTranslate}
                                         translation={
                                             segment.translation
                                             || (segment.sequence_id !== undefined ? translationMap?.[segment.sequence_id] : undefined)

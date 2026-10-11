@@ -206,6 +206,10 @@ export class UnifiedTranslationScheduler {
     return Date.now() < this.cooldownUntil;
   }
 
+  public isRateLimited(): boolean {
+    return this.isCoolingDown();
+  }
+
   public getDisabledModels(): string[] {
     return Array.from(this.disabledGeminiModels);
   }
@@ -637,17 +641,22 @@ Input Segments:
     }
 
     try {
-      translationDiagnosticLogger.stageProviderSelect('local_qwen', 'qwen3.5:4b', seq);
+      translationDiagnosticLogger.stageProviderSelect('local_qwen', 'qwen3:1.7b', seq);
+      translationStatsTracker.recordLocalQwenRequestStart();
+      const localStart = Date.now();
       let result: { successful_segments: Array<{ id: number; translation: string }>; failed_ids: number[] } | null = null;
 
       if (this.backendTranslateLocalFn) {
         result = await this.backendTranslateLocalFn(payloadItems, signal);
       } else {
         const { apiTranslateLocalBatch } = await import('./localTranslationService.ts');
-        result = await apiTranslateLocalBatch(payloadItems);
+        result = await apiTranslateLocalBatch(payloadItems, signal);
       }
 
-      if (result && result.successful_segments) {
+      if (result && result.successful_segments && result.successful_segments.length > 0) {
+        const latencyMs = Date.now() - localStart;
+        translationStatsTracker.recordLocalQwenSuccess(latencyMs);
+
         if (item.options.id.startsWith('batch-local-')) {
           item.resolve(JSON.stringify(result.successful_segments));
           return;
@@ -659,8 +668,11 @@ Input Segments:
             return;
           }
         }
+      } else {
+        translationStatsTracker.recordLocalQwenFailure();
       }
     } catch (err) {
+      translationStatsTracker.recordLocalQwenFailure();
       console.warn('[Scheduler] Local Qwen execution error:', err);
     }
 
@@ -928,7 +940,17 @@ Input Segments:
             if (category === 'rate_limited_429') {
               translationStatsTracker.recordGroq429();
               this.consecutive429s++;
-              const backoffMs = Math.min(15000, Math.pow(2, this.consecutive429s) * 1000);
+
+              let retrySec = 0;
+              const retryMatch = errStr.match(/retry[-_ ]after[:\s]+(\d+(?:\.\d+)?)/i) || errStr.match(/try again in\s+(\d+(?:\.\d+)?)\s*s/i);
+              if (retryMatch) {
+                retrySec = parseFloat(retryMatch[1]);
+              }
+
+              const backoffMs = retrySec > 0
+                ? Math.min(15000, Math.max(1000, Math.ceil(retrySec * 1000)))
+                : Math.min(15000, Math.pow(2, this.consecutive429s) * 1000);
+
               this.cooldownUntil = Date.now() + backoffMs;
               break; // Fall through to Gemini for instant subtitle delivery
             }
@@ -1020,9 +1042,19 @@ Input Segments:
                 return;
               }
 
-              if (category === 'rate_limited_429') {
+              if (category === 'rate_limited_429' || category === 'service_unavailable_503' || category === 'server_5xx') {
                 this.consecutive429s++;
-                const backoffMs = Math.min(30000, Math.pow(2, this.consecutive429s) * 1000);
+
+                let retrySec = 0;
+                const retryMatch = errStr.match(/retry[-_ ]after[:\s]+(\d+(?:\.\d+)?)/i) || errStr.match(/try again in\s+(\d+(?:\.\d+)?)\s*s/i);
+                if (retryMatch) {
+                  retrySec = parseFloat(retryMatch[1]);
+                }
+
+                const backoffMs = retrySec > 0
+                  ? Math.min(30000, Math.max(1000, Math.ceil(retrySec * 1000)))
+                  : Math.min(30000, Math.pow(2, this.consecutive429s) * 1000);
+
                 this.cooldownUntil = Date.now() + backoffMs;
                 if (item.attempts < 3) {
                   item.attempts++;

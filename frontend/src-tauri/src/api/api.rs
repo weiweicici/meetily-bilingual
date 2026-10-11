@@ -1657,4 +1657,221 @@ pub async fn api_translate_gemini_text<R: Runtime>(
     Ok(translated)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalQwenHealthResponse {
+    pub available: bool,
+    pub model: Option<String>,
+    pub latency_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalQwenBatchInputSegment {
+    pub id: i64,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalQwenBatchOutputSegment {
+    pub id: i64,
+    pub translation: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalQwenBatchResponse {
+    pub successful_segments: Vec<LocalQwenBatchOutputSegment>,
+    pub failed_ids: Vec<i64>,
+    pub raw_response: String,
+}
+
+/// Check health of Local Qwen3 (Mac mini) service directly from Rust backend over Tailscale.
+#[tauri::command]
+pub async fn api_check_local_qwen_health<R: Runtime>(
+    _app: AppHandle<R>,
+    endpoint: Option<String>,
+) -> Result<LocalQwenHealthResponse, String> {
+    let base_url = endpoint
+        .unwrap_or_else(|| "http://jeffsmac-mini.taile61984.ts.net:8080".to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let url = format!("{}/health", base_url);
+
+    let start = std::time::Instant::now();
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(LocalQwenHealthResponse {
+                available: false,
+                model: None,
+                latency_ms: None,
+                error: Some(format!("Failed to build HTTP client: {}", e)),
+            })
+        }
+    };
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let is_ok = json.get("status").and_then(|v| v.as_str()) == Some("ok");
+                    let model = json
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("qwen3:1.7b")
+                        .to_string();
+                    Ok(LocalQwenHealthResponse {
+                        available: is_ok,
+                        model: Some(model),
+                        latency_ms: Some(latency_ms),
+                        error: if is_ok {
+                            None
+                        } else {
+                            Some("Status not ok".to_string())
+                        },
+                    })
+                } else {
+                    Ok(LocalQwenHealthResponse {
+                        available: false,
+                        model: None,
+                        latency_ms: Some(latency_ms),
+                        error: Some("Failed to parse JSON response".to_string()),
+                    })
+                }
+            } else {
+                Ok(LocalQwenHealthResponse {
+                    available: false,
+                    model: None,
+                    latency_ms: Some(latency_ms),
+                    error: Some(format!("HTTP {}", resp.status())),
+                })
+            }
+        }
+        Err(e) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            Ok(LocalQwenHealthResponse {
+                available: false,
+                model: None,
+                latency_ms: Some(latency_ms),
+                error: Some(e.to_string()),
+            })
+        }
+    }
+}
+
+/// Translate micro-batched transcript segments using Local Qwen3 (Mac mini) directly from Rust backend.
+#[tauri::command]
+pub async fn api_translate_local_qwen_batch<R: Runtime>(
+    _app: AppHandle<R>,
+    endpoint: Option<String>,
+    segments: Vec<LocalQwenBatchInputSegment>,
+    context: Option<String>,
+) -> Result<LocalQwenBatchResponse, String> {
+    if segments.is_empty() {
+        return Ok(LocalQwenBatchResponse {
+            successful_segments: vec![],
+            failed_ids: vec![],
+            raw_response: "[]".to_string(),
+        });
+    }
+
+    let base_url = endpoint
+        .unwrap_or_else(|| "http://jeffsmac-mini.taile61984.ts.net:8080".to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let url = format!("{}/translate", base_url);
+
+    let prompt_text = segments
+        .iter()
+        .enumerate()
+        .map(|(idx, seg)| format!("[{}] {}", idx + 1, seg.text))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let context_text = context.unwrap_or_else(|| {
+        "Technical classroom terminology: default gateway -> 默认网关, read-only access -> 只读访问权限, packet -> 数据包, domain controller -> 域控制器, static route -> 静态路由, subnet mask -> 子网掩码, shared folder -> 共享文件夹. Translate into concise, natural Simplified Chinese.".to_string()
+    });
+
+    let payload = serde_json::json!({
+        "text": prompt_text,
+        "context": context_text
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let err_text = resp.text().await.unwrap_or_default();
+        return Err(format!("Local Qwen returned HTTP error: {}", err_text));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response JSON: {}", e))?;
+
+    let raw_trans = body["translation"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let mut parsed_map = std::collections::HashMap::new();
+    for line in raw_trans.lines() {
+        let line_trimmed = line.trim();
+        if line_trimmed.is_empty() {
+            continue;
+        }
+        if let Some(captures) = regex::Regex::new(r"^(?:\[(\d+)\]|(\d+)[\.:\-\s]+)(.*)$")
+            .ok()
+            .and_then(|re| re.captures(line_trimmed))
+        {
+            let idx_str = captures.get(1).or_else(|| captures.get(2)).map(|m| m.as_str()).unwrap_or("");
+            let content = captures.get(3).map(|m| m.as_str().trim()).unwrap_or("");
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if !content.is_empty() {
+                    parsed_map.insert(idx, content.to_string());
+                }
+            }
+        }
+    }
+
+    if parsed_map.is_empty() && segments.len() == 1 && !raw_trans.is_empty() {
+        parsed_map.insert(1, raw_trans.clone());
+    }
+
+    let mut successful_segments = Vec::new();
+    let mut failed_ids = Vec::new();
+
+    for (idx, seg) in segments.iter().enumerate() {
+        if let Some(trans) = parsed_map.get(&(idx + 1)) {
+            successful_segments.push(LocalQwenBatchOutputSegment {
+                id: seg.id,
+                translation: trans.clone(),
+            });
+        } else {
+            failed_ids.push(seg.id);
+        }
+    }
+
+    Ok(LocalQwenBatchResponse {
+        successful_segments,
+        failed_ids,
+        raw_response: raw_trans,
+    })
+}
+
 

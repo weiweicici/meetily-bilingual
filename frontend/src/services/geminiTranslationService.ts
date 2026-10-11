@@ -4,7 +4,13 @@ import {
   GROQ_CANDIDATE_MODELS,
   GEMINI_CANDIDATE_MODELS,
 } from './unifiedTranslationScheduler.ts';
-import { isLocalQwenModelAvailable } from './localTranslationService.ts';
+import {
+  isLocalQwenModelAvailable,
+  getLocalQwenEndpoint,
+  setLocalQwenEndpoint,
+  checkLocalQwenHealth,
+  DEFAULT_LOCAL_QWEN_ENDPOINT,
+} from './localTranslationService.ts';
 import { translationDiagnosticLogger } from './translationDiagnosticLogger.ts';
 
 export {
@@ -12,6 +18,10 @@ export {
   OFFICIAL_CANDIDATE_MODELS,
   GROQ_CANDIDATE_MODELS,
   GEMINI_CANDIDATE_MODELS,
+  getLocalQwenEndpoint,
+  setLocalQwenEndpoint,
+  checkLocalQwenHealth,
+  DEFAULT_LOCAL_QWEN_ENDPOINT,
 };
 
 export type UserTranslationMode = 'cloud' | 'local_qwen';
