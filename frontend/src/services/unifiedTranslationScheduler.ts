@@ -650,7 +650,7 @@ Input Segments:
         result = await this.backendTranslateLocalFn(payloadItems, signal);
       } else {
         const { apiTranslateLocalBatch } = await import('./localTranslationService.ts');
-        result = await apiTranslateLocalBatch(payloadItems, signal);
+        result = await apiTranslateLocalBatch(payloadItems, { signal });
       }
 
       if (result && result.successful_segments && result.successful_segments.length > 0) {
@@ -1042,7 +1042,7 @@ Input Segments:
                 return;
               }
 
-              if (category === 'rate_limited_429' || category === 'service_unavailable_503' || category === 'server_5xx') {
+              if (category === 'rate_limited_429' || category === 'server_5xx') {
                 this.consecutive429s++;
 
                 let retrySec = 0;
